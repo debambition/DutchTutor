@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Dutch Tutor</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main class="app">
+    <header>
+      <h1>🇳🇱 Dutch Tutor</h1>
+      <div class="controls">
+        <input id="userId" placeholder="user id (e.g. your name)" value="demo-user" />
+        <button id="startBtn">Start session</button>
+        <button id="endBtn">End session</button>
+      </div>
+    </header>
+
+    <section id="chatLog" class="chat-log" aria-live="polite"></section>
+
+    <footer>
+      <button id="micBtn" title="Hold to record">🎙️</button>
+      <input id="textInput" placeholder="Type in Dutch or your language..." />
+      <button id="sendBtn">Send</button>
+      <audio id="player" hidden></audio>
+    </footer>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
