@@ -75,17 +75,60 @@ async function startRecording() {
   mediaRecorder = new MediaRecorder(stream);
   chunks = [];
   mediaRecorder.ondataavailable = (e) => chunks.push(e.data);
-  mediaRecorder.onstop = sendRecording;
+  mediaRecorder.onstop = () => {
+    stream.getTracks().forEach((t) => t.stop());
+    sendRecording();
+  };
   mediaRecorder.start();
 }
 
-async function sendRecording() {
-  const blob = new Blob(chunks, { type: mediaRecorder.mimeType || "audio/webm" });
-  const form = new FormData();
-  form.append("audio", blob, "speech.webm");
+// Azure speech-to-text only accepts WAV/OGG, while browsers record WebM, so
+// decode the recording and re-encode it as 16 kHz mono 16-bit PCM WAV.
+const TARGET_SAMPLE_RATE = 16000;
 
+async function toWav(blob) {
+  const decodeCtx = new AudioContext();
+  const decoded = await decodeCtx.decodeAudioData(await blob.arrayBuffer());
+  decodeCtx.close();
+
+  const length = Math.ceil(decoded.duration * TARGET_SAMPLE_RATE);
+  const offline = new OfflineAudioContext(1, length, TARGET_SAMPLE_RATE);
+  const source = offline.createBufferSource();
+  source.buffer = decoded;
+  source.connect(offline.destination);
+  source.start();
+  const samples = (await offline.startRendering()).getChannelData(0);
+
+  const buffer = new ArrayBuffer(44 + samples.length * 2);
+  const view = new DataView(buffer);
+  const writeStr = (offset, s) => [...s].forEach((c, i) => view.setUint8(offset + i, c.charCodeAt(0)));
+  writeStr(0, "RIFF");
+  view.setUint32(4, 36 + samples.length * 2, true);
+  writeStr(8, "WAVE");
+  writeStr(12, "fmt ");
+  view.setUint32(16, 16, true); // fmt chunk size
+  view.setUint16(20, 1, true); // PCM
+  view.setUint16(22, 1, true); // mono
+  view.setUint32(24, TARGET_SAMPLE_RATE, true);
+  view.setUint32(28, TARGET_SAMPLE_RATE * 2, true); // byte rate
+  view.setUint16(32, 2, true); // block align
+  view.setUint16(34, 16, true); // bits per sample
+  writeStr(36, "data");
+  view.setUint32(40, samples.length * 2, true);
+  samples.forEach((s, i) => {
+    const clamped = Math.max(-1, Math.min(1, s));
+    view.setInt16(44 + i * 2, clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff, true);
+  });
+  return new Blob([buffer], { type: "audio/wav; codecs=audio/pcm; samplerate=16000" });
+}
+
+async function sendRecording() {
   appendMessage("system", "Transcribing...");
   try {
+    const recorded = new Blob(chunks, { type: mediaRecorder.mimeType || "audio/webm" });
+    const form = new FormData();
+    form.append("audio", await toWav(recorded), "speech.wav");
+
     const res = await fetch(`/api/sessions/${currentUserId()}/voice`, {
       method: "POST",
       body: form,

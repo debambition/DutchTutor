@@ -9,6 +9,7 @@ from app.agent.tutor_agent import TutorAgent
 from app.llm.base import LLMProviderError
 from app.llm.factory import get_llm_provider
 from app.schemas import Profile
+from app.speech.base import SpeechProviderError
 from app.speech.factory import get_speech_provider
 
 router = APIRouter(prefix="/api")
@@ -77,9 +78,11 @@ async def send_voice_message(user_id: str, audio: UploadFile = File(...)) -> Voi
     audio_bytes = await audio.read()
     try:
         user_text = _speech.transcribe(audio_bytes, audio.content_type or "audio/wav")
+        if not user_text.strip():
+            raise HTTPException(status_code=422, detail="No speech recognized — please try again.")
         reply = _agent.handle_message(user_id, user_text)
         reply_audio = _speech.synthesize(reply)
-    except LLMProviderError as exc:
+    except (LLMProviderError, SpeechProviderError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return VoiceResponse(
         user_text=user_text,

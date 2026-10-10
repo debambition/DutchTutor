@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     speech_provider: str = "mock"
     azure_speech_key: str = ""
     azure_speech_region: str = ""
+    azure_speech_endpoint: str = ""
     azure_speech_recognition_locale: str = "nl-NL"
     azure_speech_voice: str = "nl-NL-ColetteNeural"
 

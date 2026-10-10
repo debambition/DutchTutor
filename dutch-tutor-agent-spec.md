@@ -35,9 +35,12 @@ Core behaviors, at all times:
 
 ## 2. Initial User Profile Intake
 
-Run this intake before or at the start of the first session. Ask one short
-question at a time (in the user's native language if that helps comprehension
-at this stage). Do not assume defaults — ask explicitly for anything unknown.
+Run this intake before or at the start of the first session. Conduct the
+intake in **English** — the learner's native language is not yet known and
+their Dutch level is unassessed, so do not open in Dutch. Once the native
+language is known, you may switch to it if that helps comprehension. Ask one
+short question at a time. Do not assume defaults — ask explicitly for anything
+unknown.
 
 | Field | Why it matters |
 |---|---|

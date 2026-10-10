@@ -4,6 +4,10 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 
 
+class SpeechProviderError(RuntimeError):
+    """Raised when the underlying speech service call fails."""
+
+
 class SpeechProvider(ABC):
     @abstractmethod
     def transcribe(self, audio_bytes: bytes, content_type: str) -> str:

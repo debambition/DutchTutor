@@ -71,12 +71,18 @@ class TutorAgent:
         warm-up/review for a returning one (per spec section 7)."""
         log = self._store.get_log(user_id)
         log.current_conversation = []
-        kickoff = (
-            "This is the start of a new session. If this is the learner's "
-            "first-ever session, run the full profile intake. Otherwise, "
-            "give a short warm-up/review referencing prior sessions, then "
-            "continue per the session structure in the spec."
-        )
+        if not log.sessions and not log.profile.native_languages:
+            kickoff = (
+                "This is the learner's first-ever session. Greet them and run "
+                "the full profile intake in English (not Dutch) — their native "
+                "language and Dutch level are still unknown."
+            )
+        else:
+            kickoff = (
+                "This is the start of a new session. Give a short "
+                "warm-up/review referencing prior sessions, then continue "
+                "per the session structure in the spec."
+            )
         messages = self._build_messages(log, None)
         messages.append({"role": "system", "content": kickoff})
         reply = self._run_completion_loop(messages, log)
