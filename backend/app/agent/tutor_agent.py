@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.agent.progress import skill_progress
 from app.agent.session_memory import SessionStore
 from app.agent.spec_loader import load_system_prompt
 from app.agent.tools import TOOL_SCHEMAS, dispatch_tool
@@ -16,6 +17,20 @@ MAX_TOOL_ITERATIONS = 5
 # Keep the context window bounded for a scaffold; a production system would
 # summarize older turns instead of truncating them.
 MAX_HISTORY_TURNS = 20
+
+# Sent as the last system message each turn: models follow a checklist placed
+# right before they answer far more reliably than one buried in the prompt.
+PRACTICE_TRACKING_REMINDER = (
+    "Progress tracking — before writing your reply, call record_practice:\n"
+    "1. For each Dutch word or sentence the learner attempted in their last "
+    "message: outcome 'correct' or 'incorrect' (one call per item), with the "
+    "skill the attempt exercised.\n"
+    "2. For each new Dutch word or sentence you are about to teach or ask them "
+    "to practise in this reply: outcome 'introduced', with a translation in "
+    "the learner's feedback language.\n"
+    "Use the canonical Dutch form (e.g. 'Ik woon in ...') so repeats match. "
+    "Skip this only when no Dutch is being taught or attempted."
+)
 
 
 class TutorAgent:
@@ -36,8 +51,26 @@ class TutorAgent:
             f"- Recurring errors: {[e.pattern for e in log.recurring_errors]}\n"
             f"- Suggested focus from last session: {last_focus}\n"
             f"- Number of prior sessions: {len(log.sessions)}\n"
+            f"{self._readiness_note(log)}"
+            "- Feedback language (for the end-of-session summary and "
+            f"record_practice translations): {log.profile.resolved_feedback_language()}\n"
             "Use the provided tools to keep this state up to date as the "
             "conversation progresses."
+        )
+
+    @staticmethod
+    def _readiness_note(log: LearningLog) -> str:
+        ready = [
+            f"{p.skill} ({p.level} -> {p.next_level})"
+            for p in skill_progress(log)
+            if p.next_level and p.percent >= 100
+        ]
+        if not ready:
+            return ""
+        return (
+            "- Score-based progress suggests the learner may be ready to move up in: "
+            f"{', '.join(ready)}. Consider a short level check for these skills and "
+            "call update_skill_level if they pass.\n"
         )
 
     def _build_messages(self, log: LearningLog, new_user_text: str | None) -> list[dict[str, Any]]:
@@ -49,9 +82,12 @@ class TutorAgent:
             messages.append({"role": turn.role, "content": turn.content})
         if new_user_text is not None:
             messages.append({"role": "user", "content": new_user_text})
+        messages.append({"role": "system", "content": PRACTICE_TRACKING_REMINDER})
         return messages
 
-    def _run_completion_loop(self, messages: list[dict[str, Any]], log: LearningLog) -> str:
+    def _run_completion_loop(
+        self, messages: list[dict[str, Any]], log: LearningLog, channel: str | None = None
+    ) -> str:
         for _ in range(MAX_TOOL_ITERATIONS):
             response = self._llm.chat(messages, tools=TOOL_SCHEMAS)
             if not response.tool_calls:
@@ -59,7 +95,7 @@ class TutorAgent:
 
             messages.append(response.raw_message)
             for call in response.tool_calls:
-                result = dispatch_tool(call.name, call.arguments, log)
+                result = dispatch_tool(call.name, call.arguments, log, channel=channel)
                 messages.append(
                     {"role": "tool", "tool_call_id": call.id, "content": result}
                 )
@@ -71,6 +107,7 @@ class TutorAgent:
         warm-up/review for a returning one (per spec section 7)."""
         log = self._store.get_log(user_id)
         log.current_conversation = []
+        log.active_session = len(log.sessions) + 1
         if not log.sessions and not log.profile.native_languages:
             kickoff = (
                 "This is the learner's first-ever session. Greet them and run "
@@ -90,10 +127,14 @@ class TutorAgent:
         self._store.save_log(log)
         return reply
 
-    def handle_message(self, user_id: str, user_text: str) -> str:
+    def handle_message(self, user_id: str, user_text: str, channel: str = "text") -> str:
+        """`channel` is "voice" when the message was transcribed speech, so
+        attempts can be attributed to speaking rather than writing."""
         log = self._store.get_log(user_id)
         messages = self._build_messages(log, user_text)
-        reply = self._run_completion_loop(messages, log)
+        how = "spoke this aloud (transcribed speech)" if channel == "voice" else "typed this"
+        messages.insert(-1, {"role": "system", "content": f"The learner {how}."})
+        reply = self._run_completion_loop(messages, log, channel=channel)
 
         log.current_conversation.append(ChatTurn(role="user", content=user_text))
         log.current_conversation.append(ChatTurn(role="assistant", content=reply))
@@ -104,12 +145,16 @@ class TutorAgent:
         """Produce the end-of-session feedback report (spec section 10) and
         persist a session summary via the record_session_summary tool."""
         log = self._store.get_log(user_id)
+        language = log.profile.resolved_feedback_language()
         kickoff = (
             "The learner wants to end the session now. Produce the "
             "end-of-session feedback required by the spec (topics/vocabulary "
             "covered, grammar practiced, mistakes and corrections, current "
             "per-skill levels, suggested focus for next time), and call "
-            "record_session_summary with that information."
+            "record_session_summary with that information. "
+            f"Write the entire feedback in {language}, the learner's chosen "
+            "feedback language — not in Dutch. Only the Dutch words, phrases "
+            "and corrections being reviewed stay in Dutch."
         )
         messages = self._build_messages(log, None)
         messages.append({"role": "system", "content": kickoff})

@@ -2,29 +2,78 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Dutch Tutor</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <main class="app">
+  <div class="app">
     <header>
       <h1>🇳🇱 Dutch Tutor</h1>
       <div class="controls">
-        <input id="userId" placeholder="user id (e.g. your name)" value="demo-user" />
+        <input id="userId" aria-label="User id" placeholder="user id (e.g. your name)" value="demo-user" />
+        <label class="lang">
+          <span>Feedback in</span>
+          <select id="feedbackLang" aria-label="Feedback language">
+            <option>English</option>
+            <option>Arabic</option>
+            <option>Chinese</option>
+            <option>French</option>
+            <option>German</option>
+            <option>Hindi</option>
+            <option>Italian</option>
+            <option>Polish</option>
+            <option>Portuguese</option>
+            <option>Russian</option>
+            <option>Spanish</option>
+            <option>Turkish</option>
+            <option>Ukrainian</option>
+          </select>
+        </label>
         <button id="startBtn">Start session</button>
-        <button id="endBtn">End session</button>
+        <button id="endBtn" class="secondary">End session</button>
+        <button id="progressToggle" class="secondary progress-toggle" aria-controls="progressPanel" aria-expanded="false">📊 Progress</button>
       </div>
     </header>
 
-    <section id="chatLog" class="chat-log" aria-live="polite"></section>
+    <main class="chat">
+      <section id="chatLog" class="chat-log" aria-live="polite"></section>
+      <footer>
+        <button id="micBtn" title="Hold to record" aria-label="Hold to record">🎙️</button>
+        <input id="textInput" aria-label="Message" placeholder="Type in Dutch or your language..." />
+        <button id="sendBtn">Send</button>
+        <audio id="player" hidden></audio>
+      </footer>
+    </main>
 
-    <footer>
-      <button id="micBtn" title="Hold to record">🎙️</button>
-      <input id="textInput" placeholder="Type in Dutch or your language..." />
-      <button id="sendBtn">Send</button>
-      <audio id="player" hidden></audio>
-    </footer>
-  </main>
+    <aside id="progressPanel" class="progress" aria-label="Your progress">
+      <div class="progress-head">
+        <h2>Your progress</h2>
+        <button id="progressClose" class="icon progress-toggle" aria-label="Close progress">✕</button>
+      </div>
+
+      <div class="stats">
+        <div class="stat"><span id="statCovered" class="stat-value">0</span><span class="stat-label">covered</span></div>
+        <div class="stat"><span id="statAvg" class="stat-value">–</span><span class="stat-label">avg score</span></div>
+        <div class="stat"><span id="statStrong" class="stat-value">0</span><span class="stat-label">strong</span></div>
+        <div class="stat"><span id="statWeak" class="stat-value">0</span><span class="stat-label">need practice</span></div>
+      </div>
+
+      <h3>Skill levels</h3>
+      <div id="levels" class="levels"></div>
+      <p class="hint">Bars show progress toward the next level: words &amp; sentences you've got right
+        at least 80% of the time (over 2+ tries) at your current level. Your tutor confirms level-ups.</p>
+
+      <div class="items-head">
+        <h3>Words &amp; sentences</h3>
+        <div class="filter" role="group" aria-label="Show">
+          <button data-filter="session" class="active">This session</button>
+          <button data-filter="all">All</button>
+        </div>
+      </div>
+      <ul id="items" class="items"></ul>
+    </aside>
+  </div>
 
   <script src="app.js"></script>
 </body>

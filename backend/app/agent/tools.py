@@ -7,7 +7,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
-from app.schemas import LearningLog, RecurringError, SessionRecord
+from app.schemas import LearningLog, PracticeAttempt, PracticeItem, RecurringError, SessionRecord
 
 VALID_SKILLS = ["listening", "speaking", "reading", "writing", "grammar_vocab"]
 VALID_LEVELS = ["A1", "A2", "B1", "B2", "C1", "C2"]
@@ -63,6 +63,41 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "record_practice",
+            "description": (
+                "Track a Dutch word or sentence on the learner's progress panel. Call with "
+                "outcome='introduced' whenever you teach a new word or sentence, and with "
+                "'correct' or 'incorrect' every time the learner attempts to say, write or "
+                "translate one. Use the same canonical Dutch form each time."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "The Dutch word or sentence."},
+                    "kind": {"type": "string", "enum": ["word", "sentence"]},
+                    "translation": {
+                        "type": "string",
+                        "description": "Meaning in the learner's feedback language.",
+                    },
+                    "outcome": {"type": "string", "enum": ["introduced", "correct", "incorrect"]},
+                    "skill": {
+                        "type": "string",
+                        "enum": VALID_SKILLS,
+                        "description": (
+                            "For correct/incorrect: the skill the attempt exercised — speaking "
+                            "if they said it aloud, writing if they typed it, listening or "
+                            "reading if they showed they understood Dutch they heard or read, "
+                            "grammar_vocab for word-form/grammar exercises."
+                        ),
+                    },
+                },
+                "required": ["text", "kind", "translation", "outcome"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "log_grammar_point",
             "description": "Record a Dutch grammar point as mastered or a weak point for this learner.",
             "parameters": {
@@ -110,9 +145,23 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
 ]
 
 
-def dispatch_tool(name: str, arguments: dict[str, Any], log: LearningLog) -> str:
+def practice_key(text: str) -> str:
+    """Match "Hoe gaat het?" and "hoe gaat het" as the same item."""
+    return " ".join(text.casefold().strip(" .,!?;:\"'“”„").split())
+
+
+# How the learner's message arrived decides which production skill an attempt
+# exercised; the model can't reliably tell (it often says "try saying" even
+# when the learner types).
+_PRODUCTION_SKILL = {"text": "writing", "voice": "speaking"}
+
+
+def dispatch_tool(
+    name: str, arguments: dict[str, Any], log: LearningLog, channel: str | None = None
+) -> str:
     """Apply a tool call to the in-memory log. Returns a short status string
-    to feed back to the LLM as the tool result."""
+    to feed back to the LLM as the tool result. `channel` ("text" | "voice")
+    is how the learner's latest message arrived, when known."""
 
     if name == "update_skill_level":
         skill = arguments.get("skill")
@@ -140,6 +189,45 @@ def dispatch_tool(name: str, arguments: dict[str, Any], log: LearningLog) -> str
         if word in other:
             other.remove(word)
         return f"ok: vocabulary '{word}' -> {status}"
+
+    if name == "record_practice":
+        text = arguments.get("text", "").strip()
+        outcome = arguments.get("outcome")
+        if not text or outcome not in ("introduced", "correct", "incorrect"):
+            return f"error: invalid practice record {arguments!r}"
+        today = date.today().isoformat()
+        key = practice_key(text)
+        item = next((i for i in log.practice_items if practice_key(i.text) == key), None)
+        if item is None:
+            item = PracticeItem(
+                text=text,
+                first_seen=today,
+                first_session=len(log.sessions) + 1,
+            )
+        else:
+            # Keep the list ordered by most recent activity.
+            log.practice_items.remove(item)
+        log.practice_items.append(item)
+        item.kind = arguments.get("kind") or item.kind
+        item.translation = arguments.get("translation") or item.translation
+        item.last_seen = today
+        if outcome != "introduced":
+            skill = arguments.get("skill")
+            if skill not in VALID_SKILLS:
+                skill = "grammar_vocab"
+            if skill in ("speaking", "writing") and channel in _PRODUCTION_SKILL:
+                skill = _PRODUCTION_SKILL[channel]
+            item.attempts += 1
+            item.correct += outcome == "correct"
+            item.history.append(
+                PracticeAttempt(
+                    skill=skill,
+                    level=getattr(log.levels, skill),
+                    correct=outcome == "correct",
+                    date=today,
+                )
+            )
+        return f"ok: practice '{item.text}' -> {outcome} ({item.correct}/{item.attempts})"
 
     if name == "log_grammar_point":
         point = arguments.get("point", "").strip()
