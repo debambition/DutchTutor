@@ -4,16 +4,24 @@ resulting learning log.
 """
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
 from app.agent.progress import skill_progress
+from app.agent.grader import verify_attempts
+from app.agent.review import review_queue, schedule
 from app.agent.session_memory import SessionStore
 from app.agent.spec_loader import load_system_prompt
-from app.agent.tools import TOOL_SCHEMAS, dispatch_tool
-from app.llm.base import LLMProvider
+from app.agent.tools import TOOL_SCHEMAS, dispatch_tool, practice_key
+from app.llm.base import LLMProvider, LLMProviderError
 from app.schemas import ChatTurn, LearningLog
+from app.speech.base import Pronunciation
 
 MAX_TOOL_ITERATIONS = 5
+# Words scoring below this in pronunciation assessment get coached and are
+# added to the learner's pronunciation focus list.
+WEAK_PRONUNCIATION_SCORE = 75
+MAX_PRONUNCIATION_FOCUS = 20
 # Keep the context window bounded for a scaffold; a production system would
 # summarize older turns instead of truncating them.
 MAX_HISTORY_TURNS = 20
@@ -120,6 +128,19 @@ class TutorAgent:
                 "warm-up/review referencing prior sessions, then continue "
                 "per the session structure in the spec."
             )
+            due = review_queue(log, date.today())
+            if due:
+                listed = "; ".join(
+                    f"{i.text} ({i.translation or 'no translation'}, "
+                    f"{'never practised' if i.score is None else f'{i.score}% so far'})"
+                    for i in due
+                )
+                kickoff += (
+                    " Spaced-repetition review is due for these items, weakest "
+                    f"first: {listed}. In the warm-up, quiz the learner on them "
+                    "one at a time (recall or use in a sentence) and record each "
+                    "attempt with record_practice before moving on to new material."
+                )
         messages = self._build_messages(log, None)
         messages.append({"role": "system", "content": kickoff})
         reply = self._run_completion_loop(messages, log)
@@ -127,19 +148,128 @@ class TutorAgent:
         self._store.save_log(log)
         return reply
 
-    def handle_message(self, user_id: str, user_text: str, channel: str = "text") -> str:
+    def handle_message(
+        self,
+        user_id: str,
+        user_text: str,
+        channel: str = "text",
+        pronunciation: Pronunciation | None = None,
+    ) -> str:
         """`channel` is "voice" when the message was transcribed speech, so
-        attempts can be attributed to speaking rather than writing."""
+        attempts can be attributed to speaking rather than writing.
+        `pronunciation` is the speech service's assessment of that audio."""
         log = self._store.get_log(user_id)
         messages = self._build_messages(log, user_text)
         how = "spoke this aloud (transcribed speech)" if channel == "voice" else "typed this"
         messages.insert(-1, {"role": "system", "content": f"The learner {how}."})
+        if pronunciation is not None:
+            messages.insert(-1, {"role": "system", "content": self._pronunciation_note(log, pronunciation)})
+        before = {
+            practice_key(i.text): (len(i.history), i.review_box, i.next_review)
+            for i in log.practice_items
+        }
         reply = self._run_completion_loop(messages, log, channel=channel)
+        reply += self._second_opinion(log, before, user_text, channel)
 
         log.current_conversation.append(ChatTurn(role="user", content=user_text))
         log.current_conversation.append(ChatTurn(role="assistant", content=reply))
         self._store.save_log(log)
         return reply
+
+    @staticmethod
+    def _pronunciation_note(log: LearningLog, pronunciation: Pronunciation) -> str:
+        weak = [(w, score) for w, score in pronunciation.words if score < WEAK_PRONUNCIATION_SCORE]
+        for word, _ in weak:
+            word = word.lower()
+            if word in log.pronunciation_focus:
+                log.pronunciation_focus.remove(word)
+            log.pronunciation_focus.append(word)
+        del log.pronunciation_focus[:-MAX_PRONUNCIATION_FOCUS]
+        note = (
+            "Pronunciation assessment of the learner's audio (0-100): "
+            f"overall {pronunciation.overall:.0f}, accuracy {pronunciation.accuracy:.0f}, "
+            f"fluency {pronunciation.fluency:.0f}."
+        )
+        if weak:
+            listed = ", ".join(f"{w} ({score:.0f})" for w, score in weak)
+            note += (
+                f" Weak words: {listed}. Briefly coach how to pronounce them "
+                "(one tip each) and invite the learner to say them again."
+            )
+        else:
+            note += " No weak words — a quick word of praise for the pronunciation is enough."
+        return note
+
+    def _second_opinion(
+        self,
+        log: LearningLog,
+        before: dict[str, tuple[int, int, str]],
+        user_text: str,
+        channel: str,
+    ) -> str:
+        """Re-check the attempts graded this turn with a focused grader call
+        and apply disagreements. Returns a note to append to the reply when
+        the tutor accepted something incorrect (else "")."""
+        graded = []  # (item, new attempts, snapshot or None)
+        for item in log.practice_items:
+            snapshot = before.get(practice_key(item.text))
+            new = item.history[snapshot[0] if snapshot else 0 :]
+            if new:
+                graded.append((item, new, snapshot))
+        if not graded:
+            return ""
+        try:
+            verdicts = verify_attempts(
+                self._llm,
+                user_text,
+                [(item.text, new[-1].correct) for item, new, _ in graded],
+                log.profile.resolved_feedback_language(),
+                channel,
+            )
+        except LLMProviderError:
+            return ""  # keep the tutor's grading
+        by_key = {practice_key(v.text): v for v in verdicts}
+
+        notes = []
+        today = date.today()
+        for item, new, snapshot in graded:
+            verdict = by_key.get(practice_key(item.text))
+            if verdict is None:
+                continue
+            if verdict.correct != new[-1].correct:
+                item.correct += sum(verdict.correct - a.correct for a in new)
+                for attempt in new:
+                    attempt.correct = verdict.correct
+                # Replay this turn's scheduling with the corrected outcomes.
+                item.review_box, item.next_review = snapshot[1:] if snapshot else (0, "")
+                for attempt in new:
+                    schedule(item, "correct" if attempt.correct else "incorrect", today)
+                if not verdict.correct and verdict.note:
+                    notes.append(verdict.note)
+            if not verdict.correct and not snapshot:
+                self._track_correct_form(log, item, new, verdict.correct_form, today)
+        return f"\n\n✏️ {' '.join(notes)}" if notes else ""
+
+    @staticmethod
+    def _track_correct_form(log, item, new, correct_form: str, today: date) -> None:
+        """A brand-new item recorded in the learner's wrong form should track
+        the correct form: rename it, or fold its attempts into the existing
+        item for that form."""
+        form_key = practice_key(correct_form)
+        if not form_key or form_key == practice_key(item.text):
+            return
+        existing = next((i for i in log.practice_items if practice_key(i.text) == form_key), None)
+        if existing is None:
+            item.text = correct_form
+            return
+        existing.history.extend(new)
+        existing.attempts += len(new)
+        existing.correct += sum(a.correct for a in new)
+        existing.last_seen = item.last_seen
+        existing.translation = existing.translation or item.translation
+        for attempt in new:
+            schedule(existing, "correct" if attempt.correct else "incorrect", today)
+        log.practice_items.remove(item)
 
     def end_session(self, user_id: str) -> str:
         """Produce the end-of-session feedback report (spec section 10) and

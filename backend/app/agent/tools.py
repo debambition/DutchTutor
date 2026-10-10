@@ -7,6 +7,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
+from app.agent.review import schedule
 from app.schemas import LearningLog, PracticeAttempt, PracticeItem, RecurringError, SessionRecord
 
 VALID_SKILLS = ["listening", "speaking", "reading", "writing", "grammar_vocab"]
@@ -195,7 +196,8 @@ def dispatch_tool(
         outcome = arguments.get("outcome")
         if not text or outcome not in ("introduced", "correct", "incorrect"):
             return f"error: invalid practice record {arguments!r}"
-        today = date.today().isoformat()
+        today_date = date.today()
+        today = today_date.isoformat()
         key = practice_key(text)
         item = next((i for i in log.practice_items if practice_key(i.text) == key), None)
         if item is None:
@@ -227,6 +229,7 @@ def dispatch_tool(
                     date=today,
                 )
             )
+        schedule(item, outcome, today_date)
         return f"ok: practice '{item.text}' -> {outcome} ({item.correct}/{item.attempts})"
 
     if name == "log_grammar_point":

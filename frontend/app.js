@@ -3,21 +3,167 @@ const userIdInput = document.getElementById("userId");
 const textInput = document.getElementById("textInput");
 const player = document.getElementById("player");
 const feedbackLang = document.getElementById("feedbackLang");
+const startBtn = document.getElementById("startBtn");
+const endBtn = document.getElementById("endBtn");
+const sendBtn = document.getElementById("sendBtn");
+const micBtn = document.getElementById("micBtn");
 
 function currentUserId() {
   return userIdInput.value.trim() || "demo-user";
+}
+
+function el(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
 }
 
 function scrollChatToBottom() {
   chatLog.scrollTo({ top: chatLog.scrollHeight, behavior: "smooth" });
 }
 
+// --- Minimal, safe markdown for tutor replies ---
+// Builds DOM nodes (never innerHTML), supporting **bold**, *italic*, `code`,
+// bullet/numbered lists and paragraphs — what the tutor actually produces.
+const INLINE = /(\*\*[^*\n]+\*\*|\*[^*\s][^*\n]*\*|`[^`\n]+`)/;
+
+function renderInline(text) {
+  const frag = document.createDocumentFragment();
+  for (const part of text.split(INLINE)) {
+    if (!part) continue;
+    if (part.startsWith("**") && part.endsWith("**") && part.length > 4) {
+      frag.append(el("strong", "", part.slice(2, -2)));
+    } else if (part.startsWith("`") && part.endsWith("`") && part.length > 2) {
+      frag.append(el("code", "", part.slice(1, -1)));
+    } else if (part.startsWith("*") && part.endsWith("*") && part.length > 2) {
+      frag.append(el("em", "", part.slice(1, -1)));
+    } else {
+      frag.append(part);
+    }
+  }
+  return frag;
+}
+
+function renderMarkdown(text) {
+  const frag = document.createDocumentFragment();
+  let list = null;
+  let para = null;
+  for (const raw of text.split("\n")) {
+    const line = raw.trimEnd();
+    const bullet = line.match(/^\s*[-*•]\s+(.*)$/);
+    const numbered = line.match(/^\s*\d+[.)]\s+(.*)$/);
+    if (bullet || numbered) {
+      const tag = bullet ? "UL" : "OL";
+      if (!list || list.tagName !== tag) {
+        list = document.createElement(tag.toLowerCase());
+        frag.append(list);
+      }
+      const li = el("li");
+      li.append(renderInline((bullet || numbered)[1]));
+      list.append(li);
+      para = null;
+      continue;
+    }
+    list = null;
+    if (!line.trim()) {
+      para = null;
+      continue;
+    }
+    const heading = line.match(/^#{1,6}\s+(.*)$/);
+    if (para) para.append(el("br"));
+    else {
+      para = el("p");
+      frag.append(para);
+    }
+    para.append(heading ? el("strong", "", heading[1]) : renderInline(line));
+  }
+  return frag;
+}
+
+// --- Reply audio: play any tutor message, normal or slow ---
+let playingButton = null;
+
+async function playReply(div, slow, button) {
+  const key = slow ? "slow" : "normal";
+  div._audio = div._audio || {};
+  try {
+    if (!div._audio[key]) {
+      button.disabled = true;
+      const res = await fetch("/api/speak", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: div._text, slow }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const blob = await res.blob();
+      if (!blob.size) throw new Error("no audio (speech provider is in mock mode)");
+      div._audio[key] = URL.createObjectURL(blob);
+    }
+    playAudio(div._audio[key], button);
+  } catch (err) {
+    appendMessage("system", `Error: could not play audio (${err.message})`);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function playAudio(src, button) {
+  if (playingButton) playingButton.classList.remove("playing");
+  player.src = src;
+  player.play();
+  playingButton = button || null;
+  if (button) button.classList.add("playing");
+}
+
+player.addEventListener("ended", () => {
+  if (playingButton) playingButton.classList.remove("playing");
+  playingButton = null;
+});
+
+function audioActions(div) {
+  const actions = el("div", "msg-actions");
+  const play = el("button", "chip", "▶ Play");
+  const slow = el("button", "chip", "🐢 Slow");
+  play.title = "Play this reply";
+  slow.title = "Play this reply slowly";
+  play.addEventListener("click", () => playReply(div, false, play));
+  slow.addEventListener("click", () => playReply(div, true, slow));
+  actions.append(play, slow);
+  return actions;
+}
+
 function appendMessage(role, content) {
-  const div = document.createElement("div");
-  div.className = `msg ${role}`;
-  div.textContent = content;
+  const div = el("div", `msg ${role}`);
+  div._text = content;
+  if (role === "assistant") {
+    const body = el("div", "msg-body");
+    body.append(renderMarkdown(content));
+    div.append(body, audioActions(div));
+  } else {
+    div.textContent = content;
+  }
   chatLog.appendChild(div);
   scrollChatToBottom();
+  return div;
+}
+
+// --- Busy state + "thinking" indicator ---
+let busy = false;
+
+function setBusy(value, label = "Tutor is thinking") {
+  busy = value;
+  for (const btn of [startBtn, endBtn, sendBtn, micBtn]) btn.disabled = value;
+  document.getElementById("thinking")?.remove();
+  if (value) {
+    const bubble = el("div", "msg assistant thinking");
+    bubble.id = "thinking";
+    bubble.setAttribute("aria-label", label);
+    bubble.append(el("span", "thinking-label", label), el("span", "dots"));
+    bubble.querySelector(".dots").append(el("i"), el("i"), el("i"));
+    chatLog.appendChild(bubble);
+    scrollChatToBottom();
+  }
 }
 
 async function postJson(path, body) {
@@ -28,53 +174,82 @@ async function postJson(path, body) {
   });
   if (!res.ok) {
     const detail = await res.text();
-    throw new Error(`${res.status}: ${detail}`);
+    let message = detail;
+    try {
+      message = JSON.parse(detail).detail || detail;
+    } catch {}
+    throw new Error(message);
   }
   return res.json();
 }
 
-document.getElementById("startBtn").addEventListener("click", async () => {
-  appendMessage("system", "Starting session...");
+async function run(label, task) {
+  if (busy) return;
+  setBusy(true, label);
   try {
-    const { reply } = await postJson(`/api/sessions/${currentUserId()}/start`);
-    appendMessage("assistant", reply);
-    setProgressFilter("session");
+    await task();
   } catch (err) {
+    setBusy(false);
     appendMessage("system", `Error: ${err.message}`);
+  } finally {
+    setBusy(false);
+    refreshProgress();
   }
-  refreshProgress();
-});
-
-document.getElementById("endBtn").addEventListener("click", async () => {
-  appendMessage("system", "Ending session...");
-  try {
-    const { reply } = await postJson(`/api/sessions/${currentUserId()}/end`);
-    appendMessage("system", "Session ended.");
-    appendMessage("assistant", reply);
-  } catch (err) {
-    appendMessage("system", `Error: ${err.message}`);
-  }
-  refreshProgress();
-});
-
-async function sendText() {
-  const text = textInput.value.trim();
-  if (!text) return;
-  appendMessage("user", text);
-  textInput.value = "";
-  try {
-    const { reply } = await postJson(`/api/sessions/${currentUserId()}/message`, { text });
-    appendMessage("assistant", reply);
-  } catch (err) {
-    appendMessage("system", `Error: ${err.message}`);
-  }
-  refreshProgress();
 }
 
-document.getElementById("sendBtn").addEventListener("click", sendText);
+startBtn.addEventListener("click", () =>
+  run("Starting session", async () => {
+    const { reply } = await postJson(`/api/sessions/${currentUserId()}/start`);
+    chatLog.replaceChildren();
+    setBusy(false);
+    appendMessage("assistant", reply);
+    setProgressFilter("session");
+  })
+);
+
+endBtn.addEventListener("click", () =>
+  run("Writing your session summary", async () => {
+    const { reply } = await postJson(`/api/sessions/${currentUserId()}/end`);
+    setBusy(false);
+    appendMessage("system", "Session ended.");
+    appendMessage("assistant", reply);
+  })
+);
+
+function sendText() {
+  const text = textInput.value.trim();
+  if (!text || busy) return;
+  appendMessage("user", text);
+  textInput.value = "";
+  run("Tutor is thinking", async () => {
+    const { reply } = await postJson(`/api/sessions/${currentUserId()}/message`, { text });
+    setBusy(false);
+    appendMessage("assistant", reply);
+  });
+}
+
+sendBtn.addEventListener("click", sendText);
 textInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter") sendText();
 });
+
+// --- Restore the current conversation on load ---
+async function loadConversation() {
+  chatLog.replaceChildren();
+  try {
+    const res = await fetch(`/api/sessions/${currentUserId()}/conversation`);
+    if (!res.ok) return;
+    const turns = await res.json();
+    if (!turns.length) {
+      appendMessage("system", "Press “Start session” to begin.");
+      return;
+    }
+    for (const turn of turns) appendMessage(turn.role, turn.content);
+    chatLog.scrollTop = chatLog.scrollHeight;
+  } catch {
+    // Starting fresh is fine if history can't be loaded.
+  }
+}
 
 // --- Feedback language (stored on the learner's profile) ---
 async function loadProfile() {
@@ -141,13 +316,6 @@ function scoreBand(item) {
   return { cls: "weak", label: "Needs practice" };
 }
 
-function el(tag, className, text) {
-  const node = document.createElement(tag);
-  if (className) node.className = className;
-  if (text !== undefined) node.textContent = text;
-  return node;
-}
-
 function renderProgress() {
   if (!progressData) return;
   const items = progressData.items.filter((i) => progressFilter === "all" || i.this_session);
@@ -159,6 +327,11 @@ function renderProgress() {
     : "–";
   document.getElementById("statStrong").textContent = practised.filter(isStrong).length;
   document.getElementById("statWeak").textContent = practised.filter((i) => i.score < 50).length;
+
+  const due = progressData.items.filter((i) => i.due).length;
+  document.getElementById("dueNote").textContent = due
+    ? `${due} item${due === 1 ? "" : "s"} due for review — drills pick these first.`
+    : "Nothing due for review right now.";
 
   const levels = document.getElementById("levels");
   levels.replaceChildren(
@@ -204,7 +377,10 @@ function renderProgress() {
       const { cls, label } = scoreBand(item);
       const li = el("li", `item ${cls}`);
       const top = el("div", "item-top");
-      top.append(el("span", "item-text", item.text), el("span", "item-kind", item.kind));
+      const tags = el("span", "item-tags");
+      if (item.due) tags.append(el("span", "due-badge", "Review due"));
+      tags.append(el("span", "item-kind", item.kind));
+      top.append(el("span", "item-text", item.text), tags);
       li.append(top);
       if (item.translation) li.append(el("div", "item-translation", item.translation));
 
@@ -255,13 +431,89 @@ function setProgressOpen(open) {
 progressToggle.addEventListener("click", () => setProgressOpen(!progressPanel.classList.contains("open")));
 document.getElementById("progressClose").addEventListener("click", () => setProgressOpen(false));
 
-userIdInput.addEventListener("change", () => {
-  pickDefaultFilter = true;
-  loadProfile();
-  refreshProgress();
-});
-loadProfile();
-refreshProgress();
+// --- Listening & reading drills (graded by the server, shown in the chat) ---
+async function startDrill(kind) {
+  setProgressOpen(false);
+  const card = el("div", "msg drill");
+  chatLog.appendChild(card);
+  card.append(el("div", "drill-title", kind === "listening" ? "🎧 Listening drill" : "📖 Reading drill"));
+  const body = el("div", "drill-body", "Loading…");
+  card.append(body);
+  scrollChatToBottom();
+
+  let drill;
+  try {
+    drill = await postJson(`/api/sessions/${currentUserId()}/drills/${kind}`);
+  } catch (err) {
+    body.textContent = err.message;
+    return;
+  }
+  body.replaceChildren();
+
+  const submit = async (answer, controls) => {
+    controls.forEach((c) => (c.disabled = true));
+    try {
+      const result = await postJson(`/api/sessions/${currentUserId()}/drills/${kind}/answer`, {
+        prompt_id: drill.prompt_id,
+        answer,
+      });
+      const verdict = el("div", `drill-result ${result.correct ? "right" : "wrong"}`);
+      verdict.append(
+        el("strong", "", result.correct ? "✅ Correct!" : result.close ? "🟡 Close — check the spelling." : "❌ Not quite."),
+        el("div", "", `${result.expected}${result.translation ? ` — ${result.translation}` : ""}`)
+      );
+      const next = el("button", "chip", "Next →");
+      next.addEventListener("click", () => startDrill(kind));
+      verdict.append(next);
+      card.append(verdict);
+      scrollChatToBottom();
+      refreshProgress();
+    } catch (err) {
+      controls.forEach((c) => (c.disabled = false));
+      appendMessage("system", `Error: ${err.message}`);
+    }
+  };
+
+  if (kind === "listening") {
+    body.append(el("div", "", "Listen, then type exactly what you hear."));
+    const audioRow = el("div", "msg-actions");
+    const play = el("button", "chip", "▶ Play");
+    const slow = el("button", "chip", "🐢 Slow");
+    play.addEventListener("click", () => playAudio(`data:audio/mp3;base64,${drill.audio_base64}`, play));
+    slow.addEventListener("click", () => playAudio(`data:audio/mp3;base64,${drill.audio_slow_base64}`, slow));
+    audioRow.append(play, slow);
+    const form = el("form", "drill-form");
+    const input = el("input");
+    input.placeholder = "Type what you heard…";
+    input.setAttribute("aria-label", "What you heard");
+    const check = el("button", "", "Check");
+    form.append(input, check);
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      if (input.value.trim()) submit(input.value, [input, check]);
+    });
+    body.append(audioRow, form);
+    if (drill.audio_base64) playAudio(`data:audio/mp3;base64,${drill.audio_base64}`, play);
+    input.focus();
+  } else {
+    body.append(el("div", "", "What does this mean?"), el("div", "drill-dutch", drill.text));
+    const options = el("div", "drill-options");
+    const buttons = drill.options.map((option) => {
+      const btn = el("button", "option", option);
+      btn.addEventListener("click", () => {
+        btn.classList.add("chosen");
+        submit(option, buttons);
+      });
+      return btn;
+    });
+    options.append(...buttons);
+    body.append(options);
+  }
+  scrollChatToBottom();
+}
+
+document.getElementById("listenDrillBtn").addEventListener("click", () => startDrill("listening"));
+document.getElementById("readDrillBtn").addEventListener("click", () => startDrill("reading"));
 
 // --- Voice recording (hold the mic button to talk) ---
 // Azure speech-to-text only accepts WAV/OGG. Rather than decoding the
@@ -270,12 +522,13 @@ refreshProgress();
 // encode it as 16 kHz mono 16-bit PCM WAV.
 const TARGET_SAMPLE_RATE = 16000;
 const MIN_RECORDING_SECONDS = 0.3;
+const WEAK_PRONUNCIATION_SCORE = 75;
 
 let recording = null; // { ctx, stream, source, processor, pcm: Float32Array[] }
 let stopRequested = false;
 
 async function startRecording() {
-  if (recording) return;
+  if (recording || busy) return;
   stopRequested = false;
   // Create the AudioContext synchronously inside the user gesture (Safari).
   const ctx = new AudioContext();
@@ -361,34 +614,67 @@ async function toWav(input, inputRate) {
   return new Blob([buffer], { type: "audio/wav; codecs=audio/pcm; samplerate=16000" });
 }
 
-async function sendRecording(samples, sampleRate) {
-  appendMessage("system", "Transcribing...");
-  try {
-    const form = new FormData();
-    form.append("audio", await toWav(samples, sampleRate), "speech.wav");
-
-    const res = await fetch(`/api/sessions/${currentUserId()}/voice`, {
-      method: "POST",
-      body: form,
-    });
-    if (!res.ok) throw new Error(await res.text());
-    const data = await res.json();
-    appendMessage("user", data.user_text);
-    appendMessage("assistant", data.reply);
-    refreshProgress();
-    if (data.reply_audio_base64) {
-      player.src = `data:audio/mp3;base64,${data.reply_audio_base64}`;
-      player.hidden = false;
-      player.play();
-    }
-  } catch (err) {
-    appendMessage("system", `Error: ${err.message}`);
+function pronunciationBlock(p) {
+  const block = el("div", "pron");
+  block.append(
+    el("span", "pron-score", `🗣️ Pronunciation ${Math.round(p.overall)}`),
+    el("span", "", ` · accuracy ${Math.round(p.accuracy)} · fluency ${Math.round(p.fluency)}`)
+  );
+  const weak = p.words.filter(([, score]) => score < WEAK_PRONUNCIATION_SCORE);
+  if (weak.length) {
+    const words = el("div", "pron-words");
+    words.append("Work on: ");
+    for (const [word, score] of weak) words.append(el("span", "pron-word", `${word} ${Math.round(score)}`));
+    block.append(words);
   }
+  return block;
 }
 
-const micBtn = document.getElementById("micBtn");
-micBtn.addEventListener("mousedown", startRecording);
-micBtn.addEventListener("mouseup", stopRecording);
-micBtn.addEventListener("mouseleave", () => {
+async function sendRecording(samples, sampleRate) {
+  run("Listening and thinking", async () => {
+    const form = new FormData();
+    form.append("audio", await toWav(samples, sampleRate), "speech.wav");
+    const res = await fetch(`/api/sessions/${currentUserId()}/voice`, { method: "POST", body: form });
+    if (!res.ok) {
+      const detail = await res.text();
+      let message = detail;
+      try {
+        message = JSON.parse(detail).detail || detail;
+      } catch {}
+      throw new Error(message);
+    }
+    const data = await res.json();
+    setBusy(false);
+    const userMsg = appendMessage("user", data.user_text);
+    if (data.pronunciation) userMsg.append(pronunciationBlock(data.pronunciation));
+    const reply = appendMessage("assistant", data.reply);
+    if (data.reply_audio_base64) {
+      const src = `data:audio/mp3;base64,${data.reply_audio_base64}`;
+      reply._audio = { normal: src };
+      playAudio(src, reply.querySelector(".msg-actions .chip"));
+    }
+  });
+}
+
+// Pointer events cover mouse, touch and pen, so hold-to-talk works on phones.
+micBtn.addEventListener("pointerdown", (e) => {
+  e.preventDefault();
+  micBtn.setPointerCapture(e.pointerId);
+  startRecording();
+});
+micBtn.addEventListener("pointerup", stopRecording);
+micBtn.addEventListener("pointercancel", () => {
   if (recording) stopRecording();
 });
+micBtn.addEventListener("contextmenu", (e) => e.preventDefault());
+
+// --- Initial load ---
+function loadUser() {
+  pickDefaultFilter = true;
+  loadProfile();
+  loadConversation();
+  refreshProgress();
+}
+
+userIdInput.addEventListener("change", loadUser);
+loadUser();

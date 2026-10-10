@@ -1,16 +1,23 @@
 """HTTP API for the Dutch Tutor agent."""
 from __future__ import annotations
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+import base64
+import random
+from datetime import date
+from typing import Literal
+
+from fastapi import APIRouter, File, HTTPException, Response, UploadFile
 from pydantic import BaseModel
 
+from app.agent import drills
+from app.agent.review import is_due
 from app.agent.progress import SkillProgress, skill_progress
 from app.agent.session_memory import SessionStore
 from app.agent.tools import practice_key
 from app.agent.tutor_agent import TutorAgent
 from app.llm.base import LLMProviderError
 from app.llm.factory import get_llm_provider
-from app.schemas import Levels, Profile
+from app.schemas import ChatTurn, Levels, Profile
 from app.speech.base import SpeechProviderError
 from app.speech.factory import get_speech_provider
 
@@ -29,10 +36,18 @@ class MessageResponse(BaseModel):
     reply: str
 
 
+class PronunciationScores(BaseModel):
+    overall: float
+    accuracy: float
+    fluency: float
+    words: list[tuple[str, float]]
+
+
 class VoiceResponse(BaseModel):
     user_text: str
     reply: str
     reply_audio_base64: str
+    pronunciation: PronunciationScores | None = None
 
 
 class ProgressItem(BaseModel):
@@ -43,6 +58,7 @@ class ProgressItem(BaseModel):
     correct: int
     score: int | None
     this_session: bool
+    due: bool = False  # spaced-repetition review is due
 
 
 class ProgressResponse(BaseModel):
@@ -50,6 +66,37 @@ class ProgressResponse(BaseModel):
     skills: list[SkillProgress]
     feedback_language: str
     items: list[ProgressItem]
+
+
+class SpeakRequest(BaseModel):
+    text: str
+    slow: bool = False
+
+
+class DrillResponse(BaseModel):
+    kind: str
+    prompt_id: str
+    text: str = ""  # reading: the Dutch shown to the learner
+    options: list[str] = []  # reading: candidate meanings
+    audio_base64: str = ""  # listening
+    audio_slow_base64: str = ""  # listening
+
+
+class DrillAnswer(BaseModel):
+    prompt_id: str
+    answer: str
+
+
+class DrillResult(BaseModel):
+    correct: bool
+    close: bool
+    expected: str
+    translation: str
+
+
+DrillKind = Literal["listening", "reading"]
+# Prosody rate for "slow" replays (spec: slow-to-fast pacing control).
+SLOW_RATE = "-30%"
 
 
 @router.get("/health")
@@ -74,6 +121,7 @@ def update_profile(user_id: str, profile: Profile) -> Profile:
 def get_progress(user_id: str) -> ProgressResponse:
     log = _store.get_log(user_id)
     current_session = log.active_session or len(log.sessions) + 1
+    today = date.today()
     items = [
         ProgressItem(
             text=i.text,
@@ -83,6 +131,7 @@ def get_progress(user_id: str) -> ProgressResponse:
             correct=i.correct,
             score=i.score,
             this_session=i.first_session == current_session,
+            due=is_due(i, today),
         )
         # practice_items is kept in activity order; show the most recent first.
         for i in reversed(log.practice_items)
@@ -115,6 +164,62 @@ def get_progress(user_id: str) -> ProgressResponse:
     )
 
 
+@router.get("/sessions/{user_id}/conversation", response_model=list[ChatTurn])
+def get_conversation(user_id: str) -> list[ChatTurn]:
+    return _store.get_log(user_id).current_conversation
+
+
+@router.post("/speak")
+def speak(body: SpeakRequest) -> Response:
+    """Synthesize any tutor text on demand (e.g. replaying a reply slowly)."""
+    if not body.text.strip():
+        raise HTTPException(status_code=400, detail="text must not be empty")
+    try:
+        audio = _speech.synthesize(body.text, rate=SLOW_RATE if body.slow else "0%")
+    except SpeechProviderError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return Response(content=audio, media_type="audio/mpeg")
+
+
+@router.post("/sessions/{user_id}/drills/{kind}", response_model=DrillResponse)
+def start_drill(user_id: str, kind: DrillKind) -> DrillResponse:
+    log = _store.get_log(user_id)
+    rng = random.Random()
+    try:
+        item = drills.pick_item(log, date.today(), need_translation=kind == "reading", rng=rng)
+        if kind == "reading":
+            return DrillResponse(
+                kind=kind,
+                prompt_id=practice_key(item.text),
+                text=item.text,
+                options=drills.reading_options(log, item, rng),
+            )
+        normal = _speech.synthesize(item.text)
+        slow = _speech.synthesize(item.text, rate=SLOW_RATE)
+    except drills.DrillUnavailable as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except SpeechProviderError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return DrillResponse(
+        kind=kind,
+        prompt_id=practice_key(item.text),
+        audio_base64=base64.b64encode(normal).decode("ascii"),
+        audio_slow_base64=base64.b64encode(slow).decode("ascii"),
+    )
+
+
+@router.post("/sessions/{user_id}/drills/{kind}/answer", response_model=DrillResult)
+def answer_drill(user_id: str, kind: DrillKind, body: DrillAnswer) -> DrillResult:
+    log = _store.get_log(user_id)
+    try:
+        item = drills.find_item(log, body.prompt_id)
+    except drills.DrillUnavailable as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    result = drills.grade(log, kind, item, body.answer)
+    _store.save_log(log)
+    return DrillResult(**vars(result))
+
+
 @router.post("/sessions/{user_id}/start", response_model=MessageResponse)
 def start_session(user_id: str) -> MessageResponse:
     try:
@@ -137,14 +242,15 @@ def send_message(user_id: str, body: MessageRequest) -> MessageResponse:
 
 @router.post("/sessions/{user_id}/voice", response_model=VoiceResponse)
 async def send_voice_message(user_id: str, audio: UploadFile = File(...)) -> VoiceResponse:
-    import base64
-
     audio_bytes = await audio.read()
     try:
-        user_text = _speech.transcribe(audio_bytes, audio.content_type or "audio/wav")
+        heard = _speech.transcribe_with_pronunciation(audio_bytes, audio.content_type or "audio/wav")
+        user_text = heard.text
         if not user_text.strip():
             raise HTTPException(status_code=422, detail="No speech recognized — please try again.")
-        reply = _agent.handle_message(user_id, user_text, channel="voice")
+        reply = _agent.handle_message(
+            user_id, user_text, channel="voice", pronunciation=heard.pronunciation
+        )
         reply_audio = _speech.synthesize(reply)
     except (LLMProviderError, SpeechProviderError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
@@ -152,6 +258,9 @@ async def send_voice_message(user_id: str, audio: UploadFile = File(...)) -> Voi
         user_text=user_text,
         reply=reply,
         reply_audio_base64=base64.b64encode(reply_audio).decode("ascii"),
+        pronunciation=(
+            PronunciationScores(**vars(heard.pronunciation)) if heard.pronunciation else None
+        ),
     )
 
 

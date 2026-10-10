@@ -15,12 +15,14 @@ neither language is read with the other's accent.
 """
 from __future__ import annotations
 
+import base64
+import json
 import time
 from xml.sax.saxutils import escape
 
 import httpx
 
-from app.speech.base import SpeechProvider, SpeechProviderError
+from app.speech.base import Pronunciation, SpeechProvider, SpeechProviderError, Transcription
 from app.speech.language_segments import ENGLISH, split_by_language
 
 # Tokens are valid for 10 minutes; refresh a little early.
@@ -60,23 +62,56 @@ class AzureSpeechProvider(SpeechProvider):
             self._token_expires_at = time.monotonic() + _TOKEN_TTL_SECONDS
         return {"Authorization": f"Bearer {self._token}"}
 
-    def transcribe(self, audio_bytes: bytes, content_type: str) -> str:
+    def _recognize(self, audio_bytes: bytes, content_type: str, extra_headers: dict[str, str]) -> dict:
         url = (
             f"https://{self._region}.stt.speech.microsoft.com/speech/recognition/"
-            f"conversation/cognitiveservices/v1?language={self._locale}"
+            f"conversation/cognitiveservices/v1?language={self._locale}&format=detailed"
         )
         try:
             headers = {
                 **self._auth_headers(),
                 "Content-Type": content_type or "audio/wav; codecs=audio/pcm; samplerate=16000",
                 "Accept": "application/json",
+                **extra_headers,
             }
             response = httpx.post(url, headers=headers, content=audio_bytes, timeout=30.0)
             response.raise_for_status()
         except httpx.HTTPError as exc:
             raise SpeechProviderError(f"Speech-to-text call failed: {exc}") from exc
-        payload = response.json()
-        return payload.get("DisplayText", "")
+        return response.json()
+
+    def transcribe(self, audio_bytes: bytes, content_type: str) -> str:
+        return self._recognize(audio_bytes, content_type, {}).get("DisplayText", "")
+
+    def transcribe_with_pronunciation(self, audio_bytes: bytes, content_type: str) -> Transcription:
+        # Unscripted assessment (empty reference text): one call returns both
+        # the transcript and the pronunciation scores.
+        config = {
+            "ReferenceText": "",
+            "GradingSystem": "HundredMark",
+            "Granularity": "Word",
+            "Dimension": "Comprehensive",
+        }
+        header = base64.b64encode(json.dumps(config).encode()).decode()
+        payload = self._recognize(audio_bytes, content_type, {"Pronunciation-Assessment": header})
+        text = payload.get("DisplayText", "")
+        best = (payload.get("NBest") or [{}])[0]
+        if "PronScore" not in best:
+            return Transcription(text=text)
+        words = []
+        for word in best.get("Words", []):
+            scores = word.get("PronunciationAssessment", word)
+            if "AccuracyScore" in scores:
+                words.append((word.get("Word", ""), float(scores["AccuracyScore"])))
+        return Transcription(
+            text=text,
+            pronunciation=Pronunciation(
+                overall=float(best["PronScore"]),
+                accuracy=float(best.get("AccuracyScore", 0)),
+                fluency=float(best.get("FluencyScore", 0)),
+                words=words,
+            ),
+        )
 
     def synthesize(self, text: str, rate: str = "0%") -> bytes:
         url = f"https://{self._region}.tts.speech.microsoft.com/cognitiveservices/v1"

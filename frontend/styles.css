@@ -117,6 +117,12 @@ button.icon {
 button:hover { opacity: 0.9; }
 button:disabled { opacity: 0.5; cursor: progress; }
 
+#micBtn {
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
 #micBtn.recording {
   background: var(--accent);
   border-color: var(--accent);
@@ -157,6 +163,163 @@ button:disabled { opacity: 0.5; cursor: progress; }
   align-self: flex-start;
   background: var(--surface-2);
   color: var(--text);
+  white-space: normal;
+}
+
+.msg-body p { margin: 0 0 0.45rem; }
+.msg-body p:last-child { margin-bottom: 0; }
+.msg-body ul, .msg-body ol { margin: 0.2rem 0 0.45rem; padding-left: 1.3rem; }
+.msg-body li { margin: 0.1rem 0; }
+.msg-body code {
+  font-size: 0.9em;
+  padding: 0 0.25rem;
+  border-radius: 4px;
+  background: var(--track);
+}
+
+.msg-actions {
+  display: flex;
+  gap: 0.35rem;
+  margin-top: 0.4rem;
+}
+
+button.chip {
+  font-size: 0.75rem;
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--accent-2);
+}
+
+button.chip.playing {
+  background: var(--accent-2);
+  color: #fff;
+}
+
+/* "Tutor is thinking" bubble */
+.msg.thinking {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.dots { display: inline-flex; gap: 3px; }
+
+.dots i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--muted);
+  animation: blink 1.2s infinite ease-in-out;
+}
+
+.dots i:nth-child(2) { animation-delay: 0.2s; }
+.dots i:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes blink {
+  0%, 80%, 100% { opacity: 0.25; }
+  40% { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dots i { animation: none; opacity: 0.6; }
+}
+
+/* Pronunciation scores under a spoken message */
+.pron {
+  margin-top: 0.4rem;
+  padding-top: 0.35rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.3);
+  font-size: 0.75rem;
+  white-space: normal;
+}
+
+.pron-score { font-weight: 600; }
+
+.pron-words {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin-top: 0.25rem;
+  align-items: center;
+}
+
+.pron-word {
+  padding: 0 0.4rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* Drill cards in the chat */
+.msg.drill {
+  align-self: stretch;
+  max-width: 100%;
+  white-space: normal;
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.drill-title { font-weight: 600; margin-bottom: 0.35rem; }
+.drill-body { display: flex; flex-direction: column; gap: 0.5rem; }
+
+.drill-dutch {
+  font-size: 1.15rem;
+  font-weight: 600;
+}
+
+.drill-form { display: flex; gap: 0.4rem; }
+.drill-form input { flex: 1; min-width: 0; padding: 0.4rem; }
+
+.drill-options {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+  gap: 0.4rem;
+}
+
+button.option {
+  background: transparent;
+  color: var(--text);
+  border-color: var(--border);
+  text-align: left;
+}
+
+button.option.chosen { border-color: var(--accent-2); }
+
+.drill-result {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.3rem;
+  margin-top: 0.6rem;
+  padding: 0.5rem 0.65rem;
+  border-radius: 8px;
+}
+
+.drill-result.right { background: color-mix(in srgb, var(--good) 14%, transparent); }
+.drill-result.wrong { background: color-mix(in srgb, var(--weak) 12%, transparent); }
+
+.drill-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.item-tags {
+  display: flex;
+  gap: 0.35rem;
+  align-items: baseline;
+  flex-shrink: 0;
+}
+
+.due-badge {
+  font-size: 0.62rem;
+  font-weight: 600;
+  padding: 0 0.35rem;
+  border-radius: 999px;
+  color: var(--ok);
+  border: 1px solid var(--ok);
 }
 
 .msg.system {

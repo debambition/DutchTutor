@@ -65,6 +65,9 @@ class PracticeItem(BaseModel):
     last_seen: str = ""
     first_session: int = 1  # 1-based session number it was introduced in
     history: list[PracticeAttempt] = Field(default_factory=list)
+    # Spaced repetition (Leitner boxes): see app/agent/review.py.
+    review_box: int = 0
+    next_review: str = ""  # ISO date the item is next due; "" = not scheduled
 
     @property
     def score(self) -> int | None:
