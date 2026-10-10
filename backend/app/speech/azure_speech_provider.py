@@ -8,6 +8,10 @@ Auth: keys of an Azure AI Services (multi-service) resource with a custom
 subdomain are only accepted on that resource's own endpoint, not on the
 regional speech endpoints. When `endpoint` is set, the key is exchanged there
 for a short-lived bearer token which the regional endpoints do accept.
+
+TTS: replies mix English explanations with Dutch. When `explanation_voice` is
+set, English runs are voiced by it and Dutch runs by the Dutch `voice`, so
+neither language is read with the other's accent.
 """
 from __future__ import annotations
 
@@ -17,6 +21,7 @@ from xml.sax.saxutils import escape
 import httpx
 
 from app.speech.base import SpeechProvider, SpeechProviderError
+from app.speech.language_segments import ENGLISH, split_by_language
 
 # Tokens are valid for 10 minutes; refresh a little early.
 _TOKEN_TTL_SECONDS = 9 * 60
@@ -30,11 +35,13 @@ class AzureSpeechProvider(SpeechProvider):
         recognition_locale: str,
         voice: str,
         endpoint: str = "",
+        explanation_voice: str = "",
     ) -> None:
         self._key = key
         self._region = region
         self._locale = recognition_locale
         self._voice = voice
+        self._explanation_voice = explanation_voice
         self._endpoint = endpoint.rstrip("/")
         self._token = ""
         self._token_expires_at = 0.0
@@ -73,12 +80,14 @@ class AzureSpeechProvider(SpeechProvider):
 
     def synthesize(self, text: str, rate: str = "0%") -> bytes:
         url = f"https://{self._region}.tts.speech.microsoft.com/cognitiveservices/v1"
-        ssml = (
-            f'<speak version="1.0" xml:lang="{self._locale}">'
-            f'<voice name="{self._voice}">'
-            f'<prosody rate="{rate}">{escape(text)}</prosody>'
-            f"</voice></speak>"
+        runs = split_by_language(text) if self._explanation_voice else []
+        runs = runs or [("", text)]
+        voices = "".join(
+            f'<voice name="{self._explanation_voice if lang == ENGLISH else self._voice}">'
+            f'<prosody rate="{rate}">{escape(run)}</prosody></voice>'
+            for lang, run in runs
         )
+        ssml = f'<speak version="1.0" xml:lang="{self._locale}">{voices}</speak>'
         try:
             headers = {
                 **self._auth_headers(),

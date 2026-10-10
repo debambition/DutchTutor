@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     azure_speech_endpoint: str = ""
     azure_speech_recognition_locale: str = "nl-NL"
     azure_speech_voice: str = "nl-NL-ColetteNeural"
+    # Voice for English explanations in mixed replies; empty = Dutch voice only.
+    azure_speech_explanation_voice: str = "en-GB-SoniaNeural"
 
     # App
     data_dir: Path = Path("./data/users")
