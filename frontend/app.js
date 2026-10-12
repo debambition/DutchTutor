@@ -1,5 +1,4 @@
 const chatLog = document.getElementById("chatLog");
-const userIdInput = document.getElementById("userId");
 const textInput = document.getElementById("textInput");
 const player = document.getElementById("player");
 const feedbackLang = document.getElementById("feedbackLang");
@@ -8,8 +7,43 @@ const endBtn = document.getElementById("endBtn");
 const sendBtn = document.getElementById("sendBtn");
 const micBtn = document.getElementById("micBtn");
 
+// --- Sign-in ---
+// The token is kept in localStorage so a reload stays signed in; every API
+// call sends it, and a 401 brings the sign-in form back.
+const AUTH_KEY = "dutchTutorAuth";
+let authState = null; // { userId, token }
+
+function loadAuth() {
+  try {
+    authState = JSON.parse(localStorage.getItem(AUTH_KEY)) || null;
+  } catch {
+    authState = null;
+  }
+}
+
+function saveAuth(state) {
+  authState = state;
+  try {
+    if (state) localStorage.setItem(AUTH_KEY, JSON.stringify(state));
+    else localStorage.removeItem(AUTH_KEY);
+  } catch {
+    // Storage unavailable (private mode): stay signed in for this page only.
+  }
+}
+
 function currentUserId() {
-  return userIdInput.value.trim() || "demo-user";
+  return authState ? authState.userId : "";
+}
+
+async function api(path, options = {}) {
+  const headers = { ...(options.headers || {}) };
+  if (authState) headers.Authorization = `Bearer ${authState.token}`;
+  const res = await fetch(path, { ...options, headers });
+  if (res.status === 401) {
+    showSignIn("Please sign in again.");
+    throw new Error("Please sign in.");
+  }
+  return res;
 }
 
 function el(tag, className, text) {
@@ -90,7 +124,7 @@ async function playReply(div, slow, button) {
   try {
     if (!div._audio[key]) {
       button.disabled = true;
-      const res = await fetch("/api/speak", {
+      const res = await api("/api/speak", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text: div._text, slow }),
@@ -167,7 +201,7 @@ function setBusy(value, label = "Tutor is thinking") {
 }
 
 async function postJson(path, body) {
-  const res = await fetch(path, {
+  const res = await api(path, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: body ? JSON.stringify(body) : undefined,
@@ -237,7 +271,7 @@ textInput.addEventListener("keydown", (e) => {
 async function loadConversation() {
   chatLog.replaceChildren();
   try {
-    const res = await fetch(`/api/sessions/${currentUserId()}/conversation`);
+    const res = await api(`/api/sessions/${currentUserId()}/conversation`);
     if (!res.ok) return;
     const turns = await res.json();
     if (!turns.length) {
@@ -253,7 +287,7 @@ async function loadConversation() {
 
 // --- Feedback language (stored on the learner's profile) ---
 async function loadProfile() {
-  const res = await fetch(`/api/sessions/${currentUserId()}/profile`);
+  const res = await api(`/api/sessions/${currentUserId()}/profile`);
   if (!res.ok) return;
   const profile = await res.json();
   const language = profile.feedback_language || profile.native_languages[0] || "English";
@@ -265,10 +299,10 @@ async function loadProfile() {
 
 feedbackLang.addEventListener("change", async () => {
   try {
-    const res = await fetch(`/api/sessions/${currentUserId()}/profile`);
+    const res = await api(`/api/sessions/${currentUserId()}/profile`);
     if (!res.ok) throw new Error(await res.text());
     const profile = { ...(await res.json()), feedback_language: feedbackLang.value };
-    const put = await fetch(`/api/sessions/${currentUserId()}/profile`, {
+    const put = await api(`/api/sessions/${currentUserId()}/profile`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(profile),
@@ -363,6 +397,8 @@ function renderProgress() {
     })
   );
 
+  renderHistory(progressData.history);
+
   const list = document.getElementById("items");
   if (!items.length) {
     list.replaceChildren(
@@ -401,9 +437,103 @@ function renderProgress() {
   );
 }
 
+// --- Level history: one small step chart per skill (small multiples) ---
+// Five skills usually share a level, so one multi-line chart would overplot;
+// separate panels on a shared scale keep each readable with a single hue.
+const LEVELS = ["A1", "A2", "B1", "B2", "C1", "C2"];
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+function svg(tag, attrs) {
+  const node = document.createElementNS(SVG_NS, tag);
+  for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
+  return node;
+}
+
+const historyTip = el("div", "chart-tip");
+historyTip.hidden = true;
+document.body.append(historyTip);
+
+function renderHistory(history) {
+  const box = document.getElementById("history");
+  const table = document.getElementById("historyTable");
+  if (history.length < 2) {
+    box.replaceChildren(el("p", "empty", "Your level history appears after your first session."));
+    table.replaceChildren();
+    return;
+  }
+  // Shared y-scale: A1 up to one level above the highest reached.
+  const top = Math.min(
+    LEVELS.length - 1,
+    Math.max(1, ...history.flatMap((h) => Object.values(h.levels).map((l) => LEVELS.indexOf(l)))) + 1
+  );
+  const W = 300, H = 22 + top * 16, padL = 24, padR = 10, padT = 8, padB = 6;
+  const x = (i) => padL + (i * (W - padL - padR)) / (history.length - 1);
+  const y = (lvl) => padT + ((top - lvl) * (H - padT - padB)) / top;
+
+  box.replaceChildren(
+    ...Object.keys(SKILL_LABELS).map((skill) => {
+      const panel = el("div", "history-panel");
+      const points = history
+        .map((h, i) => ({ i, h, lvl: LEVELS.indexOf(h.levels[skill]) }))
+        .filter((p) => p.lvl >= 0);
+      const now = points.length ? LEVELS[points[points.length - 1].lvl] : "–";
+      const head = el("div", "history-head");
+      head.append(el("span", "level-name", SKILL_LABELS[skill]), el("span", "level-badge", now));
+      panel.append(head);
+
+      const chart = svg("svg", { viewBox: `0 0 ${W} ${H}`, class: "history-chart", role: "img" });
+      chart.setAttribute("aria-label", `${SKILL_LABELS[skill]} level by session, now ${now}`);
+      for (let lvl = 0; lvl <= top; lvl++) {
+        chart.append(svg("line", { x1: padL, x2: W - padR, y1: y(lvl), y2: y(lvl), class: "grid" }));
+        const label = svg("text", { x: padL - 6, y: y(lvl) + 3, class: "tick" });
+        label.textContent = LEVELS[lvl];
+        chart.append(label);
+      }
+      if (points.length) {
+        // Step line: a level holds until the next snapshot.
+        let d = `M${x(points[0].i)},${y(points[0].lvl)}`;
+        for (const p of points.slice(1)) d += ` H${x(p.i)} V${y(p.lvl)}`;
+        chart.append(svg("path", { d, class: "step" }));
+        for (const p of points) {
+          const dot = svg("circle", { cx: x(p.i), cy: y(p.lvl), r: 4, class: "dot" });
+          const hit = svg("circle", { cx: x(p.i), cy: y(p.lvl), r: 11, class: "hit" });
+          const tip = `${p.h.label === "Now" ? "Now" : `Session ${p.h.label.slice(1)}`} · ${p.h.date} · ${LEVELS[p.lvl]}`;
+          hit.addEventListener("pointerenter", (e) => {
+            historyTip.textContent = tip;
+            historyTip.hidden = false;
+            const r = e.target.getBoundingClientRect();
+            historyTip.style.left = `${r.left + r.width / 2}px`;
+            historyTip.style.top = `${r.top}px`;
+            dot.classList.add("active");
+          });
+          hit.addEventListener("pointerleave", () => {
+            historyTip.hidden = true;
+            dot.classList.remove("active");
+          });
+          chart.append(dot, hit);
+        }
+      }
+      panel.append(chart);
+      return panel;
+    })
+  );
+
+  // Table view of the same data, for screen readers and exact values.
+  const thead = el("tr");
+  thead.append(el("th", "", "Skill"), ...history.map((h) => el("th", "", h.label)));
+  table.replaceChildren(
+    thead,
+    ...Object.entries(SKILL_LABELS).map(([skill, label]) => {
+      const row = el("tr");
+      row.append(el("th", "", label), ...history.map((h) => el("td", "", h.levels[skill] || "–")));
+      return row;
+    })
+  );
+}
+
 async function refreshProgress() {
   try {
-    const res = await fetch(`/api/sessions/${currentUserId()}/progress`);
+    const res = await api(`/api/sessions/${currentUserId()}/progress`);
     if (!res.ok) return;
     progressData = await res.json();
     if (pickDefaultFilter) {
@@ -634,7 +764,7 @@ async function sendRecording(samples, sampleRate) {
   run("Listening and thinking", async () => {
     const form = new FormData();
     form.append("audio", await toWav(samples, sampleRate), "speech.wav");
-    const res = await fetch(`/api/sessions/${currentUserId()}/voice`, { method: "POST", body: form });
+    const res = await api(`/api/sessions/${currentUserId()}/voice`, { method: "POST", body: form });
     if (!res.ok) {
       const detail = await res.text();
       let message = detail;
@@ -669,12 +799,64 @@ micBtn.addEventListener("pointercancel", () => {
 micBtn.addEventListener("contextmenu", (e) => e.preventDefault());
 
 // --- Initial load ---
+const signInDialog = document.getElementById("signIn");
+const signInForm = document.getElementById("signInForm");
+const signInError = document.getElementById("signInError");
+
+function showSignIn(message = "") {
+  saveAuth(null);
+  document.getElementById("whoami").textContent = "";
+  signInError.textContent = message;
+  signInDialog.hidden = false;
+  document.getElementById("signInUser").focus();
+}
+
+signInForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const submit = signInForm.querySelector("button");
+  submit.disabled = true;
+  signInError.textContent = "";
+  try {
+    const res = await fetch("/api/auth/sign-in", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        user_id: document.getElementById("signInUser").value.trim(),
+        passphrase: document.getElementById("signInPass").value,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "Sign-in failed.");
+    saveAuth({ userId: data.user_id, token: data.token });
+    document.getElementById("signInPass").value = "";
+    signInDialog.hidden = true;
+    loadUser();
+    if (data.created) appendMessage("system", `Passphrase set for “${data.user_id}”. Keep it safe — you'll need it to sign in again.`);
+  } catch (err) {
+    signInError.textContent = err.message;
+  } finally {
+    submit.disabled = false;
+  }
+});
+
+document.getElementById("signOutBtn").addEventListener("click", () => {
+  chatLog.replaceChildren();
+  progressData = null;
+  showSignIn();
+});
+
 function loadUser() {
+  document.getElementById("whoami").textContent = `Signed in as ${currentUserId()}`;
   pickDefaultFilter = true;
   loadProfile();
   loadConversation();
   refreshProgress();
 }
 
-userIdInput.addEventListener("change", loadUser);
-loadUser();
+loadAuth();
+if (authState) {
+  signInDialog.hidden = true;
+  loadUser();
+} else {
+  showSignIn();
+}

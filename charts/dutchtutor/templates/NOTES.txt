@@ -1,0 +1,18 @@
+Dutch Tutor is deploying as a single replica (learner data lives on one disk).
+
+{{- if .Values.ingress.enabled }}
+Open: http{{ if .Values.ingress.tls.enabled }}s{{ end }}://{{ .Values.ingress.host }}/
+{{- if not .Values.ingress.tls.enabled }}
+WARNING: TLS is off. Browsers block the microphone on plain HTTP, so voice won't work.
+{{- end }}
+{{- else }}
+Try it locally:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "dutchtutor.fullname" . }} 8000:{{ .Values.service.port }}
+  then open http://localhost:8000/
+{{- end }}
+{{- if not .Values.persistence.enabled }}
+WARNING: persistence is off — learner data is lost whenever the pod restarts.
+{{- end }}
+
+User ids are claimed by whoever signs in to them first; claim any existing
+ids (e.g. demo-user) before sharing the URL.

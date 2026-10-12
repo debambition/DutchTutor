@@ -1,0 +1,42 @@
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "dutchtutor.fullname" . }}
+  labels:
+    {{- include "dutchtutor.labels" . | nindent 4 }}
+  {{- $certManager := .Values.ingress.tls.certManager }}
+  {{- if or .Values.ingress.annotations (and .Values.ingress.tls.enabled (or $certManager.selfSigned $certManager.clusterIssuer)) }}
+  annotations:
+    {{- with .Values.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- if .Values.ingress.tls.enabled }}
+    {{- if $certManager.selfSigned }}
+    cert-manager.io/issuer: {{ include "dutchtutor.fullname" . }}-selfsigned
+    {{- else if $certManager.clusterIssuer }}
+    cert-manager.io/cluster-issuer: {{ $certManager.clusterIssuer }}
+    {{- end }}
+    {{- end }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - hosts: [{{ .Values.ingress.host | quote }}]
+      secretName: {{ .Values.ingress.tls.secretName }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "dutchtutor.fullname" . }}
+                port:
+                  name: http
+{{- end }}

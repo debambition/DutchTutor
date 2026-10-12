@@ -1,0 +1,101 @@
+# Default values for the dutchtutor chart.
+
+image:
+  repository: container-registry.nspaas.ns.nl/sdptsa/dutchtutor
+  tag: "0.2"  # defaults to the chart's appVersion
+  pullPolicy: IfNotPresent
+
+imagePullSecrets:
+  - name: harbor-sdptsa-pull  # Harbor project sdptsa
+
+# The app stores learner data as JSON files on one volume, and keeps the
+# sign-in throttle in memory, so it must run as a single replica. There is
+# deliberately no replica or autoscaling setting.
+
+# Non-secret settings, passed as environment variables (see backend/.env.example).
+config:
+  LLM_PROVIDER: azure_openai          # mock | openai | azure_openai
+  AZURE_OPENAI_ENDPOINT: "https://dutchtutor.services.ai.azure.com/"
+  AZURE_OPENAI_API_VERSION: "2024-10-21"
+  AZURE_OPENAI_DEPLOYMENT: "gpt-4.1-mini"
+  OPENAI_MODEL: gpt-4o-mini
+  SPEECH_PROVIDER: azure              # mock | azure
+  AZURE_SPEECH_REGION: "westeurope"
+  AZURE_SPEECH_ENDPOINT: "https://dutchtutor.services.ai.azure.com/"           # needed for Azure AI Services keys
+  AZURE_SPEECH_RECOGNITION_LOCALE: nl-NL
+  AZURE_SPEECH_VOICE: nl-NL-ColetteNeural
+  AZURE_SPEECH_EXPLANATION_VOICE: en-GB-SoniaNeural
+
+# API keys and the sign-in signing key.
+secret:
+  # Recommended: create the Secret yourself and name it here, so keys never
+  # pass through Helm values. Expected keys: AZURE_OPENAI_API_KEY,
+  # AZURE_SPEECH_KEY, OPENAI_API_KEY (if used) and AUTH_SECRET.
+  existingSecret: dutchtutor-keys
+  # Otherwise the chart creates a Secret from these values (pass them with
+  # --set or a values file kept out of git). An empty AUTH_SECRET is
+  # generated once and kept across upgrades.
+  values:
+    AZURE_OPENAI_API_KEY: ""
+    AZURE_SPEECH_KEY: ""
+    OPENAI_API_KEY: ""
+    AUTH_SECRET: ""
+
+persistence:
+  enabled: true  # without it, learner data is lost when the pod restarts
+  storageClass: managed-csi  # AKS Azure Disk
+  size: 1Gi
+  existingClaim: ""
+  # Keep the volume (and learner data) when the release is uninstalled.
+  keepOnUninstall: true
+
+service:
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: true
+  className: nsco-nginx  # private ingress used by the other apps on this cluster
+  host: dutchtutor.obisvtdev.ns.nl
+  annotations:
+    # Voice uploads are ~32 KB per second of speech; tutor turns call the
+    # LLM and speech services and can take 10-30 seconds.
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "120"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "120"
+  # Browsers only allow the microphone on HTTPS, so keep TLS on.
+  tls:
+    enabled: true
+    secretName: dutchtutor-tls
+    # How cert-manager issues the certificate (use one):
+    certManager:
+      # A self-signed certificate from a namespace Issuer this chart creates.
+      selfSigned: true
+      # Or an existing ClusterIssuer, e.g. letsencrypt-clusterissuer (its DNS
+      # zone must be publicly delegated for Let's Encrypt to validate).
+      clusterIssuer: ""
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 512Mi
+
+podSecurityContext:
+  fsGroup: 10001
+  runAsNonRoot: true
+  runAsUser: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

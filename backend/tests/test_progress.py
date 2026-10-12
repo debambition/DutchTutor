@@ -12,7 +12,8 @@ class RecordingLLMProvider(LLMProvider):
         self.messages = []
 
     def chat(self, messages, tools=None) -> LLMResponse:
-        self.messages = list(messages)
+        if tools is not None:  # the tutor call, not the post-turn audit
+            self.messages = list(messages)
         return LLMResponse(text="Summary", tool_calls=[], raw_message={"role": "assistant", "content": "Summary"})
 
 
@@ -109,3 +110,24 @@ def test_progress_lists_vocabulary_from_past_session_summaries(tmp_path, monkeyp
 
     items = TestClient(app).get("/api/sessions/dave/progress").json()["items"]
     assert [(i["text"], i["score"]) for i in items] == [("huis", 100), ("werk", None), ("kantoor", None)]
+
+
+def test_progress_includes_level_history(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app.api import routes
+    from app.main import app
+
+    store = SessionStore(data_dir=tmp_path)
+    monkeypatch.setattr(routes, "_store", store)
+    log = store.get_log("dave")
+    log.sessions = [
+        SessionRecord(date="2026-10-01", level_snapshot={"speaking": "A1"}),
+        SessionRecord(date="2026-10-03"),  # no snapshot recorded: skipped
+        SessionRecord(date="2026-10-05", level_snapshot={"speaking": "A2"}),
+    ]
+    log.levels.speaking = "A2"
+    store.save_log(log)
+
+    history = TestClient(app).get("/api/sessions/dave/progress").json()["history"]
+    assert [(h["label"], h["levels"].get("speaking")) for h in history] == [("S1", "A1"), ("S3", "A2"), ("Now", "A2")]

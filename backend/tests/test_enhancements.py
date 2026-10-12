@@ -94,7 +94,7 @@ def text_reply(text):
 
 def test_grader_overrules_lenient_tutor_and_fixes_item(tmp_path):
     store = SessionStore(data_dir=tmp_path)
-    grader_json = json.dumps({"items": [{
+    grader_json = json.dumps({"graded": [{
         "text": "Met mij gaat het goed, dank jij.", "correct": False,
         "correct_form": "Met mij gaat het goed, dank je.",
         "note": 'Use "dank je", not "dank jij".',
@@ -271,8 +271,9 @@ def test_progress_marks_due_items(client):
 
 def test_new_item_saved_in_wrong_form_is_corrected_even_when_tutor_agreed(tmp_path):
     store = SessionStore(data_dir=tmp_path)
-    grader_json = json.dumps({"items": [{
-        "text": "Goed, dank jij.", "correct": False, "correct_form": "Goed, dank je.", "note": "Use dank je.",
+    # The tutor's reply already corrected it, so the audit gives no note.
+    grader_json = json.dumps({"graded": [{
+        "text": "Goed, dank jij.", "correct": False, "correct_form": "Goed, dank je.", "note": "",
     }]})
     llm = RecordingLLM([
         tool_reply(("record_practice", {
@@ -293,7 +294,7 @@ def test_wrong_form_attempt_is_merged_into_existing_correct_item(tmp_path):
     log = store.get_log("dave")
     add(log, "Ik woon in Utrecht.", "I live in Utrecht.", outcome="correct", skill="writing")
     store.save_log(log)
-    grader_json = json.dumps({"items": [{
+    grader_json = json.dumps({"graded": [{
         "text": "Ik woon in de Utrecht.", "correct": False, "correct_form": "Ik woon in Utrecht.", "note": "",
     }]})
     llm = RecordingLLM([
@@ -309,3 +310,48 @@ def test_wrong_form_attempt_is_merged_into_existing_correct_item(tmp_path):
     items = store.get_log("dave").practice_items
     assert [(i.text, i.correct, i.attempts) for i in items] == [("Ik woon in Utrecht.", 1, 2)]
     assert items[0].review_box == 0  # the mistake resets its review schedule
+
+
+def test_audit_records_items_the_tutor_forgot(tmp_path):
+    store = SessionStore(data_dir=tmp_path)
+    audit_json = json.dumps({"graded": [], "missed": [
+        {"text": "En met jou?", "kind": "sentence", "translation": "And you?", "outcome": "introduced", "note": ""},
+        {"text": "Ik heet Goro.", "kind": "sentence", "translation": "My name is Goro.", "outcome": "incorrect",
+         "note": 'Say "Ik heet", not "Ik heb".'},
+    ]})
+    llm = RecordingLLM([text_reply('Goed! Now try "En met jou?"'), text_reply(audit_json)])
+
+    reply = TutorAgent(llm=llm, store=store).handle_message("dave", "Ik heb Goro.", channel="voice")
+
+    assert reply.endswith('✏️ Say "Ik heet", not "Ik heb".')
+    items = {i.text: i for i in store.get_log("dave").practice_items}
+    assert items["En met jou?"].attempts == 0 and items["En met jou?"].next_review
+    assert [(a.skill, a.correct) for a in items["Ik heet Goro."].history] == [("speaking", False)]
+
+
+def test_audit_runs_at_session_start_for_taught_items(tmp_path):
+    store = SessionStore(data_dir=tmp_path)
+    audit_json = json.dumps({"graded": [], "missed": [
+        {"text": "Goedemorgen", "kind": "word", "translation": "Good morning", "outcome": "introduced", "note": ""},
+    ]})
+    llm = RecordingLLM([text_reply("Today: 'Goedemorgen' means good morning."), text_reply(audit_json)])
+    TutorAgent(llm=llm, store=store).start_session("dave")
+    assert [i.text for i in store.get_log("dave").practice_items] == ["Goedemorgen"]
+
+
+def test_no_duplicate_note_when_tutor_already_corrected(tmp_path):
+    store = SessionStore(data_dir=tmp_path)
+    audit_json = json.dumps({
+        "graded": [{"text": "twee broodje", "correct": False, "correct_form": "twee broodjes",
+                    "note": "The plural is broodjes."}],
+        "missed": [{"text": "Ik wil een koffie.", "kind": "sentence", "translation": "I want a coffee.",
+                    "outcome": "incorrect", "note": "Say 'een koffie'."}],
+    })
+    llm = RecordingLLM([
+        tool_reply(("record_practice", {"text": "twee broodje", "kind": "sentence", "translation": "two rolls",
+                                        "outcome": "incorrect", "skill": "writing"})),
+        text_reply('Almost: "twee broodjes". And it is "Ik wil een koffie."'),
+        text_reply(audit_json),
+    ])
+    reply = TutorAgent(llm=llm, store=store).handle_message("dave", "Ik wil koffie en twee broodje.")
+    assert "✏️" not in reply

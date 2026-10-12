@@ -33,6 +33,9 @@ class Settings(BaseSettings):
 
     # App
     data_dir: Path = Path("./data/users")
+    # Signs sign-in tokens. Empty = a random key generated once and stored in
+    # the data folder (data/auth_secret).
+    auth_secret: str = ""
 
 
 settings = Settings()

@@ -11,7 +11,8 @@
     <header>
       <h1>🇳🇱 Dutch Tutor</h1>
       <div class="controls">
-        <input id="userId" aria-label="User id" placeholder="user id (e.g. your name)" value="demo-user" />
+        <span id="whoami" class="whoami"></span>
+        <button id="signOutBtn" class="secondary">Sign out</button>
         <label class="lang">
           <span>Feedback in</span>
           <select id="feedbackLang" aria-label="Feedback language">
@@ -64,6 +65,13 @@
       <p class="hint">Bars show progress toward the next level: words &amp; sentences you've got right
         at least 80% of the time (over 2+ tries) at your current level. Your tutor confirms level-ups.</p>
 
+      <h3>Level history</h3>
+      <div id="history" class="history"></div>
+      <details class="table-view">
+        <summary>Table view</summary>
+        <table id="historyTable"></table>
+      </details>
+
       <h3>Practice</h3>
       <div class="drill-buttons">
         <button id="listenDrillBtn" class="secondary">🎧 Listening drill</button>
@@ -80,6 +88,22 @@
       </div>
       <ul id="items" class="items"></ul>
     </aside>
+  </div>
+
+  <div id="signIn" class="sign-in" role="dialog" aria-modal="true" aria-labelledby="signInTitle">
+    <form id="signInForm" class="sign-in-card">
+      <h2 id="signInTitle">🇳🇱 Sign in to Dutch Tutor</h2>
+      <label>User id
+        <input id="signInUser" autocomplete="username" required maxlength="40"
+               pattern="[A-Za-z0-9_.\-]{1,40}" title="Letters, digits, dots, dashes or underscores" />
+      </label>
+      <label>Passphrase
+        <input id="signInPass" type="password" autocomplete="current-password" required minlength="6" />
+      </label>
+      <p class="hint">First time with this user id? Signing in sets its passphrase.</p>
+      <p id="signInError" class="sign-in-error" role="alert"></p>
+      <button type="submit">Sign in</button>
+    </form>
   </div>
 
   <script src="app.js"></script>

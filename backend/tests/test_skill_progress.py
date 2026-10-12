@@ -64,7 +64,8 @@ class RecordingLLMProvider(LLMProvider):
         self.messages = []
 
     def chat(self, messages, tools=None) -> LLMResponse:
-        self.messages = list(messages)
+        if tools is not None:  # the tutor call, not the post-turn audit
+            self.messages = list(messages)
         return LLMResponse(text="ok", tool_calls=[], raw_message={"role": "assistant", "content": "ok"})
 
 

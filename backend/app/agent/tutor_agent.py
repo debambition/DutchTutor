@@ -8,7 +8,7 @@ from datetime import date
 from typing import Any
 
 from app.agent.progress import skill_progress
-from app.agent.grader import verify_attempts
+from app.agent.audit import audit_turn
 from app.agent.review import review_queue, schedule
 from app.agent.session_memory import SessionStore
 from app.agent.spec_loader import load_system_prompt
@@ -143,7 +143,9 @@ class TutorAgent:
                 )
         messages = self._build_messages(log, None)
         messages.append({"role": "system", "content": kickoff})
+        before = self._snapshot(log)
         reply = self._run_completion_loop(messages, log)
+        reply += self._audit(log, before, None, reply, None)
         log.current_conversation.append(ChatTurn(role="assistant", content=reply))
         self._store.save_log(log)
         return reply
@@ -164,12 +166,9 @@ class TutorAgent:
         messages.insert(-1, {"role": "system", "content": f"The learner {how}."})
         if pronunciation is not None:
             messages.insert(-1, {"role": "system", "content": self._pronunciation_note(log, pronunciation)})
-        before = {
-            practice_key(i.text): (len(i.history), i.review_box, i.next_review)
-            for i in log.practice_items
-        }
+        before = self._snapshot(log)
         reply = self._run_completion_loop(messages, log, channel=channel)
-        reply += self._second_opinion(log, before, user_text, channel)
+        reply += self._audit(log, before, user_text, reply, channel)
 
         log.current_conversation.append(ChatTurn(role="user", content=user_text))
         log.current_conversation.append(ChatTurn(role="assistant", content=reply))
@@ -200,43 +199,56 @@ class TutorAgent:
             note += " No weak words — a quick word of praise for the pronunciation is enough."
         return note
 
-    def _second_opinion(
+    @staticmethod
+    def _snapshot(log: LearningLog) -> dict[str, tuple[int, int, str]]:
+        """Per-item state before a turn, so the audit can see what changed."""
+        return {
+            practice_key(i.text): (len(i.history), i.review_box, i.next_review)
+            for i in log.practice_items
+        }
+
+    def _audit(
         self,
         log: LearningLog,
         before: dict[str, tuple[int, int, str]],
-        user_text: str,
-        channel: str,
+        learner_text: str | None,
+        reply: str,
+        channel: str | None,
     ) -> str:
-        """Re-check the attempts graded this turn with a focused grader call
-        and apply disagreements. Returns a note to append to the reply when
-        the tutor accepted something incorrect (else "")."""
+        """Audit this turn's tracking (see app/agent/audit.py) and apply it:
+        fix grading disagreements and record anything the tutor missed.
+        Returns a correction note to append to the reply (else "")."""
         graded = []  # (item, new attempts, snapshot or None)
+        introduced = []
         for item in log.practice_items:
             snapshot = before.get(practice_key(item.text))
             new = item.history[snapshot[0] if snapshot else 0 :]
             if new:
                 graded.append((item, new, snapshot))
-        if not graded:
-            return ""
+            elif snapshot is None:
+                introduced.append(item.text)
         try:
-            verdicts = verify_attempts(
+            audit = audit_turn(
                 self._llm,
-                user_text,
+                learner_text,
+                reply,
+                introduced,
                 [(item.text, new[-1].correct) for item, new, _ in graded],
                 log.profile.resolved_feedback_language(),
                 channel,
             )
         except LLMProviderError:
-            return ""  # keep the tutor's grading
-        by_key = {practice_key(v.text): v for v in verdicts}
+            return ""  # keep the tutor's records as they are
 
         notes = []
         today = date.today()
+        by_key = {practice_key(v.text): v for v in audit.graded}
         for item, new, snapshot in graded:
             verdict = by_key.get(practice_key(item.text))
             if verdict is None:
                 continue
-            if verdict.correct != new[-1].correct:
+            tutor_accepted = new[-1].correct
+            if verdict.correct != tutor_accepted:
                 item.correct += sum(verdict.correct - a.correct for a in new)
                 for attempt in new:
                     attempt.correct = verdict.correct
@@ -244,10 +256,40 @@ class TutorAgent:
                 item.review_box, item.next_review = snapshot[1:] if snapshot else (0, "")
                 for attempt in new:
                     schedule(item, "correct" if attempt.correct else "incorrect", today)
-                if not verdict.correct and verdict.note:
-                    notes.append(verdict.note)
+            # Only add a note when the tutor let the mistake pass; if it marked
+            # the attempt incorrect, its reply already dealt with it.
+            if tutor_accepted and not verdict.correct and verdict.note:
+                notes.append(verdict.note)
             if not verdict.correct and not snapshot:
                 self._track_correct_form(log, item, new, verdict.correct_form, today)
+
+        recorded = {practice_key(item.text) for item, _, _ in graded} | {
+            practice_key(text) for text in introduced
+        }
+        for missed in audit.missed:
+            if practice_key(missed.text) in recorded:
+                continue
+            recorded.add(practice_key(missed.text))
+            dispatch_tool(
+                "record_practice",
+                {
+                    "text": missed.text,
+                    "kind": missed.kind,
+                    "translation": missed.translation,
+                    "outcome": missed.outcome,
+                    # Attempts in chat are production; the channel decides
+                    # speaking vs writing.
+                    "skill": "writing",
+                },
+                log,
+                channel=channel,
+            )
+            if (
+                missed.outcome == "incorrect"
+                and missed.note
+                and practice_key(missed.text) not in practice_key(reply)
+            ):
+                notes.append(missed.note)  # the reply never showed the correct form
         return f"\n\n✏️ {' '.join(notes)}" if notes else ""
 
     @staticmethod

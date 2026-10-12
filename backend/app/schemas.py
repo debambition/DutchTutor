@@ -116,6 +116,9 @@ class LearningLog(BaseModel):
     # panel's "this session" view keeps showing it after it ends, until the
     # next one starts. 0 = no session started yet.
     active_session: int = 0
+    # Salted scrypt hash of the learner's passphrase ("" = not yet claimed).
+    # Never returned by the API.
+    passphrase_hash: str = ""
     grammar: GrammarState = Field(default_factory=GrammarState)
     recurring_errors: list[RecurringError] = Field(default_factory=list)
     pronunciation_focus: list[str] = Field(default_factory=list)

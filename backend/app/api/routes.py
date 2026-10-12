@@ -6,9 +6,10 @@ import random
 from datetime import date
 from typing import Literal
 
-from fastapi import APIRouter, File, HTTPException, Response, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile
 from pydantic import BaseModel
 
+from app import auth
 from app.agent import drills
 from app.agent.review import is_due
 from app.agent.progress import SkillProgress, skill_progress
@@ -61,9 +62,16 @@ class ProgressItem(BaseModel):
     due: bool = False  # spaced-repetition review is due
 
 
+class LevelPoint(BaseModel):
+    label: str  # "S1", "S2", ... or "Now"
+    date: str
+    levels: dict[str, str]
+
+
 class ProgressResponse(BaseModel):
     levels: Levels
     skills: list[SkillProgress]
+    history: list[LevelPoint]  # per-session level snapshots, then current
     feedback_language: str
     items: list[ProgressItem]
 
@@ -99,17 +107,54 @@ DrillKind = Literal["listening", "reading"]
 SLOW_RATE = "-30%"
 
 
+class SignInRequest(BaseModel):
+    user_id: str
+    passphrase: str
+
+
+class SignInResponse(BaseModel):
+    user_id: str
+    token: str
+    created: bool  # True when this sign-in set the passphrase
+
+
+@router.post("/auth/sign-in", response_model=SignInResponse)
+def sign_in(body: SignInRequest) -> SignInResponse:
+    user_id = body.user_id.strip()
+    if not auth.USER_ID_PATTERN.match(user_id):
+        raise HTTPException(
+            status_code=400,
+            detail="User id: 1-40 letters, digits, dots, dashes or underscores.",
+        )
+    auth.throttle.check(user_id)
+    log = _store.get_log(user_id)
+    created = not log.passphrase_hash
+    if created:
+        if len(body.passphrase) < auth.MIN_PASSPHRASE_LENGTH:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Choose a passphrase of at least {auth.MIN_PASSPHRASE_LENGTH} characters.",
+            )
+        log.passphrase_hash = auth.hash_passphrase(body.passphrase)
+        _store.save_log(log)
+    elif not auth.verify_passphrase(body.passphrase, log.passphrase_hash):
+        auth.throttle.fail(user_id)
+        raise HTTPException(status_code=401, detail="Wrong passphrase for this user id.")
+    auth.throttle.succeed(user_id)
+    return SignInResponse(user_id=user_id, token=auth.issue_token(user_id), created=created)
+
+
 @router.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@router.get("/sessions/{user_id}/profile", response_model=Profile)
+@router.get("/sessions/{user_id}/profile", dependencies=[Depends(auth.require_user)], response_model=Profile)
 def get_profile(user_id: str) -> Profile:
     return _store.get_log(user_id).profile
 
 
-@router.put("/sessions/{user_id}/profile", response_model=Profile)
+@router.put("/sessions/{user_id}/profile", dependencies=[Depends(auth.require_user)], response_model=Profile)
 def update_profile(user_id: str, profile: Profile) -> Profile:
     log = _store.get_log(user_id)
     log.profile = profile
@@ -117,7 +162,7 @@ def update_profile(user_id: str, profile: Profile) -> Profile:
     return log.profile
 
 
-@router.get("/sessions/{user_id}/progress", response_model=ProgressResponse)
+@router.get("/sessions/{user_id}/progress", dependencies=[Depends(auth.require_user)], response_model=ProgressResponse)
 def get_progress(user_id: str) -> ProgressResponse:
     log = _store.get_log(user_id)
     current_session = log.active_session or len(log.sessions) + 1
@@ -156,20 +201,27 @@ def get_progress(user_id: str) -> ProgressResponse:
                     this_session=number == current_session,
                 )
             )
+    history = [
+        LevelPoint(label=f"S{number}", date=session.date, levels=session.level_snapshot)
+        for number, session in enumerate(log.sessions, start=1)
+        if session.level_snapshot
+    ]
+    history.append(LevelPoint(label="Now", date=today.isoformat(), levels=log.levels.model_dump()))
     return ProgressResponse(
         levels=log.levels,
         skills=skill_progress(log),
+        history=history,
         feedback_language=log.profile.resolved_feedback_language(),
         items=items,
     )
 
 
-@router.get("/sessions/{user_id}/conversation", response_model=list[ChatTurn])
+@router.get("/sessions/{user_id}/conversation", dependencies=[Depends(auth.require_user)], response_model=list[ChatTurn])
 def get_conversation(user_id: str) -> list[ChatTurn]:
     return _store.get_log(user_id).current_conversation
 
 
-@router.post("/speak")
+@router.post("/speak", dependencies=[Depends(auth.require_signed_in)])
 def speak(body: SpeakRequest) -> Response:
     """Synthesize any tutor text on demand (e.g. replaying a reply slowly)."""
     if not body.text.strip():
@@ -181,7 +233,7 @@ def speak(body: SpeakRequest) -> Response:
     return Response(content=audio, media_type="audio/mpeg")
 
 
-@router.post("/sessions/{user_id}/drills/{kind}", response_model=DrillResponse)
+@router.post("/sessions/{user_id}/drills/{kind}", dependencies=[Depends(auth.require_user)], response_model=DrillResponse)
 def start_drill(user_id: str, kind: DrillKind) -> DrillResponse:
     log = _store.get_log(user_id)
     rng = random.Random()
@@ -208,7 +260,7 @@ def start_drill(user_id: str, kind: DrillKind) -> DrillResponse:
     )
 
 
-@router.post("/sessions/{user_id}/drills/{kind}/answer", response_model=DrillResult)
+@router.post("/sessions/{user_id}/drills/{kind}/answer", dependencies=[Depends(auth.require_user)], response_model=DrillResult)
 def answer_drill(user_id: str, kind: DrillKind, body: DrillAnswer) -> DrillResult:
     log = _store.get_log(user_id)
     try:
@@ -220,7 +272,7 @@ def answer_drill(user_id: str, kind: DrillKind, body: DrillAnswer) -> DrillResul
     return DrillResult(**vars(result))
 
 
-@router.post("/sessions/{user_id}/start", response_model=MessageResponse)
+@router.post("/sessions/{user_id}/start", dependencies=[Depends(auth.require_user)], response_model=MessageResponse)
 def start_session(user_id: str) -> MessageResponse:
     try:
         reply = _agent.start_session(user_id)
@@ -229,7 +281,7 @@ def start_session(user_id: str) -> MessageResponse:
     return MessageResponse(reply=reply)
 
 
-@router.post("/sessions/{user_id}/message", response_model=MessageResponse)
+@router.post("/sessions/{user_id}/message", dependencies=[Depends(auth.require_user)], response_model=MessageResponse)
 def send_message(user_id: str, body: MessageRequest) -> MessageResponse:
     if not body.text.strip():
         raise HTTPException(status_code=400, detail="text must not be empty")
@@ -240,7 +292,7 @@ def send_message(user_id: str, body: MessageRequest) -> MessageResponse:
     return MessageResponse(reply=reply)
 
 
-@router.post("/sessions/{user_id}/voice", response_model=VoiceResponse)
+@router.post("/sessions/{user_id}/voice", dependencies=[Depends(auth.require_user)], response_model=VoiceResponse)
 async def send_voice_message(user_id: str, audio: UploadFile = File(...)) -> VoiceResponse:
     audio_bytes = await audio.read()
     try:
@@ -264,7 +316,7 @@ async def send_voice_message(user_id: str, audio: UploadFile = File(...)) -> Voi
     )
 
 
-@router.post("/sessions/{user_id}/end", response_model=MessageResponse)
+@router.post("/sessions/{user_id}/end", dependencies=[Depends(auth.require_user)], response_model=MessageResponse)
 def end_session(user_id: str) -> MessageResponse:
     try:
         reply = _agent.end_session(user_id)
