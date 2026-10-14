@@ -197,12 +197,14 @@ def test_drills_unavailable_without_items():
 class FakeSpeech(SpeechProvider):
     def __init__(self):
         self.rates = []
+        self.voices = []
 
     def transcribe(self, audio_bytes, content_type):
         return ""
 
-    def synthesize(self, text, rate="0%"):
+    def synthesize(self, text, rate="0%", explanation_voice=None):
         self.rates.append(rate)
+        self.voices.append(explanation_voice)
         return f"mp3:{text}:{rate}".encode()
 
 

@@ -9,9 +9,11 @@ subdomain are only accepted on that resource's own endpoint, not on the
 regional speech endpoints. When `endpoint` is set, the key is exchanged there
 for a short-lived bearer token which the regional endpoints do accept.
 
-TTS: replies mix English explanations with Dutch. When `explanation_voice` is
-set, English runs are voiced by it and Dutch runs by the Dutch `voice`, so
-neither language is read with the other's accent.
+TTS: replies mix explanations (English or the learner's chosen language) with
+Dutch. When an explanation voice is set, explanation runs are voiced by it and
+Dutch runs by the Dutch `voice`, so neither is read with the other's accent.
+Callers pass the voice for the learner's explanation language; the
+constructor's `explanation_voice` is the default (English).
 """
 from __future__ import annotations
 
@@ -23,7 +25,7 @@ from xml.sax.saxutils import escape
 import httpx
 
 from app.speech.base import Pronunciation, SpeechProvider, SpeechProviderError, Transcription
-from app.speech.language_segments import ENGLISH, split_by_language
+from app.speech.language_segments import EXPLANATION, split_by_language
 
 # Tokens are valid for 10 minutes; refresh a little early.
 _TOKEN_TTL_SECONDS = 9 * 60
@@ -113,12 +115,13 @@ class AzureSpeechProvider(SpeechProvider):
             ),
         )
 
-    def synthesize(self, text: str, rate: str = "0%") -> bytes:
+    def synthesize(self, text: str, rate: str = "0%", explanation_voice: str | None = None) -> bytes:
         url = f"https://{self._region}.tts.speech.microsoft.com/cognitiveservices/v1"
-        runs = split_by_language(text) if self._explanation_voice else []
+        explanation_voice = explanation_voice or self._explanation_voice
+        runs = split_by_language(text) if explanation_voice else []
         runs = runs or [("", text)]
         voices = "".join(
-            f'<voice name="{self._explanation_voice if lang == ENGLISH else self._voice}">'
+            f'<voice name="{explanation_voice if lang == EXPLANATION else self._voice}">'
             f'<prosody rate="{rate}">{escape(run)}</prosody></voice>'
             for lang, run in runs
         )

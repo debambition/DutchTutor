@@ -1,22 +1,27 @@
-"""Split a tutor reply into Dutch and English runs for text-to-speech.
+"""Tell Dutch apart from the learner's explanation language.
 
-Beginner replies mix English explanations with quoted Dutch phrases. Read by a
-single Dutch voice, the English comes out with a heavy Dutch accent (and by an
-English voice, the Dutch would be mispronounced), so each run is voiced in its
-own language.
+Beginner replies mix explanations (English, or the learner's chosen language)
+with quoted Dutch phrases. Read by a single Dutch voice, the explanation comes
+out with a heavy Dutch accent (and the Dutch would be mispronounced by the
+other voice), so each run is voiced in its own language. The same detection
+decides whether a learner's message contains Dutch worth evaluating.
 
 Detection is a lightweight heuristic: quoted / emphasised spans and sentences
 are scored by how many common Dutch vs. English function words they contain.
 Chunks with no signal (e.g. "Goedemorgen!") take the language of a neighbour;
 quoted chunks with no signal default to Dutch, since that is what the tutor
-quotes.
+quotes. Text in a non-Latin script (e.g. Hindi in Devanagari) is always the
+explanation language.
 """
 from __future__ import annotations
 
 import re
 
 DUTCH = "nl"
-ENGLISH = "en"
+# The learner's explanation language: English by default, or their chosen
+# feedback language (only its voice differs).
+EXPLANATION = "explanation"
+ENGLISH = EXPLANATION  # backwards-compatible name
 
 # Common words unique to each language (words shared by both, such as "is",
 # "in", "we" and "was", are deliberately left out).
@@ -48,16 +53,20 @@ _QUOTED = re.compile(r'"[^"\n]+"|“[^”\n]+”|„[^”“\n]+[”“]|\*[^*\n
 # Sentence-ish boundaries, keeping the delimiter with the preceding text.
 _SENTENCE = re.compile(r"[^.!?:;\n—–]+[.!?:;\n—–]*")
 _WORD = re.compile(r"[a-zà-ÿ']+")
+# Letters outside Latin (e.g. Devanagari, Arabic, Cyrillic, CJK).
+_NON_LATIN = re.compile(r"[^\W\d_a-zA-Z\u00C0-\u024F]")
 
 
 def _score(text: str) -> str | None:
+    if _NON_LATIN.search(text):
+        return EXPLANATION
     words = _WORD.findall(text.lower())
     nl = sum(w in _DUTCH_WORDS for w in words)
     en = sum(w in _ENGLISH_WORDS for w in words)
     if nl > en:
         return DUTCH
     if en > nl:
-        return ENGLISH
+        return EXPLANATION
     return None
 
 
@@ -99,3 +108,48 @@ def split_by_language(text: str, default: str = DUTCH) -> list[tuple[str, str]]:
         else:
             runs.append((lang, spoken))
     return [(lang, t.strip()) for lang, t in runs if t.strip()]
+
+
+# Language names and stock intake answers in English: an answer like "Hindi"
+# or "not sure" is information about the learner, never Dutch to evaluate.
+_NON_DUTCH_ANSWERS = frozenset(
+    """
+    english hindi urdu arabic spanish french german chinese mandarin cantonese
+    portuguese italian polish turkish ukrainian russian japanese korean bengali
+    punjabi tamil telugu marathi gujarati kannada malayalam persian farsi dari
+    pashto kurdish romanian greek swedish norwegian danish finnish hungarian
+    czech slovak bulgarian serbian croatian vietnamese thai indonesian malay
+    tagalog filipino swahili amharic somali tigrinya nepali sinhala hebrew
+    sure none beginner maybe know don't idk
+    """.split()
+)
+
+
+def looks_non_dutch(text: str, known_dutch: frozenset[str] | set[str] = frozenset()) -> bool:
+    """Whether text is evidently not Dutch: non-Latin script, or more English
+    words and language names than Dutch words. Unknown words ("huis") don't
+    count either way, so plain Dutch vocabulary is never rejected."""
+    if _NON_LATIN.search(text):
+        return True
+    words = _WORD.findall(text.lower())
+    nl = sum(w in _DUTCH_WORDS or w in known_dutch for w in words)
+    other = sum(
+        (w in _ENGLISH_WORDS or w in _NON_DUTCH_ANSWERS) and w not in known_dutch for w in words
+    )
+    return other > nl
+
+
+_CLAUSE = re.compile(r"[.,!?;:\n—–\"“”„()]+")
+
+
+def dutch_words(text: str, known_dutch: frozenset[str] | set[str] = frozenset()) -> set[str]:
+    """Lower-cased words from the clauses of a learner's message that aren't
+    evidently another language — the words worth evaluating as Dutch.
+    "Hindi." or "Not sure." give nothing; "My name is Goro, ik heet Goro."
+    gives {"ik", "heet", "goro"}."""
+    other = (_ENGLISH_WORDS | _NON_DUTCH_ANSWERS) - set(known_dutch)
+    words: set[str] = set()
+    for clause in _CLAUSE.split(text):
+        if clause.strip() and not looks_non_dutch(clause, known_dutch):
+            words.update(w for w in _WORD.findall(clause.lower()) if w not in other)
+    return words

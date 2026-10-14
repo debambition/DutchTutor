@@ -10,8 +10,10 @@ from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFil
 from pydantic import BaseModel
 
 from app import auth
+from app.config import settings
 from app.agent import drills
 from app.agent.review import is_due
+from app.agent.pronunciation import dutch_pronunciation
 from app.agent.progress import SkillProgress, skill_progress
 from app.agent.session_memory import SessionStore
 from app.agent.tools import practice_key
@@ -221,13 +223,21 @@ def get_conversation(user_id: str) -> list[ChatTurn]:
     return _store.get_log(user_id).current_conversation
 
 
-@router.post("/speak", dependencies=[Depends(auth.require_signed_in)])
-def speak(body: SpeakRequest) -> Response:
+def _explanation_voice(user_id: str) -> str | None:
+    """Voice for the learner's chosen explanation language (None = default English)."""
+    language = _store.get_log(user_id).profile.feedback_language
+    return settings.azure_speech_explanation_voices.get(language) if language else None
+
+
+@router.post("/speak")
+def speak(body: SpeakRequest, user_id: str = Depends(auth.require_signed_in)) -> Response:
     """Synthesize any tutor text on demand (e.g. replaying a reply slowly)."""
     if not body.text.strip():
         raise HTTPException(status_code=400, detail="text must not be empty")
     try:
-        audio = _speech.synthesize(body.text, rate=SLOW_RATE if body.slow else "0%")
+        audio = _speech.synthesize(
+            body.text, rate=SLOW_RATE if body.slow else "0%", explanation_voice=_explanation_voice(user_id)
+        )
     except SpeechProviderError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return Response(content=audio, media_type="audio/mpeg")
@@ -300,19 +310,17 @@ async def send_voice_message(user_id: str, audio: UploadFile = File(...)) -> Voi
         user_text = heard.text
         if not user_text.strip():
             raise HTTPException(status_code=422, detail="No speech recognized — please try again.")
-        reply = _agent.handle_message(
-            user_id, user_text, channel="voice", pronunciation=heard.pronunciation
-        )
-        reply_audio = _speech.synthesize(reply)
+        # Only Dutch is evaluated: drop scores for English/native-language words.
+        pronunciation = dutch_pronunciation(heard.pronunciation, user_text, _store.get_log(user_id))
+        reply = _agent.handle_message(user_id, user_text, channel="voice", pronunciation=pronunciation)
+        reply_audio = _speech.synthesize(reply, explanation_voice=_explanation_voice(user_id))
     except (LLMProviderError, SpeechProviderError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return VoiceResponse(
         user_text=user_text,
         reply=reply,
         reply_audio_base64=base64.b64encode(reply_audio).decode("ascii"),
-        pronunciation=(
-            PronunciationScores(**vars(heard.pronunciation)) if heard.pronunciation else None
-        ),
+        pronunciation=PronunciationScores(**vars(pronunciation)) if pronunciation else None,
     )
 
 

@@ -36,7 +36,7 @@ class SpeechProvider(ABC):
         return Transcription(text=self.transcribe(audio_bytes, content_type))
 
     @abstractmethod
-    def synthesize(self, text: str, rate: str = "0%") -> bytes:
+    def synthesize(self, text: str, rate: str = "0%", explanation_voice: str | None = None) -> bytes:
         """Convert Dutch text into spoken audio (mp3 bytes).
 
         `rate` is an SSML prosody rate (e.g. "-20%", "0%", "+15%"), used to

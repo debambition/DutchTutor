@@ -37,7 +37,10 @@ PRACTICE_TRACKING_REMINDER = (
     "to practise in this reply: outcome 'introduced', with a translation in "
     "the learner's feedback language.\n"
     "Use the canonical Dutch form (e.g. 'Ik woon in ...') so repeats match. "
-    "Skip this only when no Dutch is being taught or attempted."
+    "Skip this only when no Dutch is being taught or attempted.\n"
+    "Only Dutch is evaluated: never record, grade, correct or comment on the "
+    "learner's English or native language — including the pronunciation of "
+    "non-Dutch words and intake answers such as 'Hindi' or 'not sure'."
 )
 
 
@@ -60,10 +63,24 @@ class TutorAgent:
             f"- Suggested focus from last session: {last_focus}\n"
             f"- Number of prior sessions: {len(log.sessions)}\n"
             f"{self._readiness_note(log)}"
-            "- Feedback language (for the end-of-session summary and "
-            f"record_practice translations): {log.profile.resolved_feedback_language()}\n"
+            f"{self._language_note(log)}"
             "Use the provided tools to keep this state up to date as the "
             "conversation progresses."
+        )
+
+    @staticmethod
+    def _language_note(log: LearningLog) -> str:
+        if log.profile.feedback_language:
+            return (
+                f"- Explanation language (chosen by the learner): {log.profile.feedback_language}. "
+                "Write all explanations, instructions, translations and feedback in it; "
+                "use Dutch only for the Dutch being taught or practised.\n"
+            )
+        return (
+            "- Explanation language: not chosen yet. Use English for now. Once the "
+            "native and other known languages are known, ask which of them the "
+            "learner wants explanations in, save it with update_profile_field "
+            "(field 'feedback_language'), and switch to it.\n"
         )
 
     @staticmethod
@@ -120,7 +137,16 @@ class TutorAgent:
             kickoff = (
                 "This is the learner's first-ever session. Greet them and run "
                 "the full profile intake in English (not Dutch) — their native "
-                "language and Dutch level are still unknown."
+                "language and Dutch level are still unknown. Ask one question at "
+                "a time, starting with: (1) their native language(s), (2) any "
+                "other languages they speak, (3) which of those languages they "
+                "want explanations in. Save every answer immediately with "
+                "update_profile_field (native_languages and other_languages are "
+                "lists; the chosen language goes in feedback_language) and "
+                "switch to that language as soon as it is chosen. Then continue "
+                "with the rest of the intake (§2). Intake answers are information "
+                "about the learner — never evaluate, correct or record them as "
+                "practice."
             )
         else:
             kickoff = (
@@ -220,12 +246,19 @@ class TutorAgent:
         Returns a correction note to append to the reply (else "")."""
         graded = []  # (item, new attempts, snapshot or None)
         introduced = []
-        for item in log.practice_items:
+        reply_key = practice_key(reply)
+        for item in list(log.practice_items):
             snapshot = before.get(practice_key(item.text))
             new = item.history[snapshot[0] if snapshot else 0 :]
             if new:
                 graded.append((item, new, snapshot))
             elif snapshot is None:
+                if practice_key(item.text) not in reply_key:
+                    # "Introduced" but absent from the reply: the tutor logged
+                    # Dutch it never showed (e.g. a translation of its own
+                    # explanation). Drop it.
+                    log.practice_items.remove(item)
+                    continue
                 introduced.append(item.text)
         try:
             audit = audit_turn(
@@ -269,6 +302,8 @@ class TutorAgent:
         for missed in audit.missed:
             if practice_key(missed.text) in recorded:
                 continue
+            if missed.outcome == "introduced" and practice_key(missed.text) not in reply_key:
+                continue  # only Dutch actually shown in the reply counts as taught
             recorded.add(practice_key(missed.text))
             dispatch_tool(
                 "record_practice",

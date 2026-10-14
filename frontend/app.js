@@ -308,7 +308,7 @@ feedbackLang.addEventListener("change", async () => {
       body: JSON.stringify(profile),
     });
     if (!put.ok) throw new Error(await put.text());
-    appendMessage("system", `Feedback language set to ${feedbackLang.value}.`);
+    appendMessage("system", `Explanations will be in ${feedbackLang.value}.`);
   } catch (err) {
     appendMessage("system", `Error: ${err.message}`);
   }

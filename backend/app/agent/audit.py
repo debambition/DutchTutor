@@ -33,7 +33,10 @@ _AUDIT_PROMPT = (
     "in the reply (outcome 'introduced'), and Dutch the learner attempted in "
     "their message (outcome 'correct' or 'incorrect'). Give the correct Dutch "
     "form as text. Skip greetings used only as chit-chat by the tutor, and "
-    "skip anything already recorded.\n\n"
+    "skip anything already recorded.\n"
+    "Only Dutch counts: never include, grade or note English or the learner's "
+    "native language — answers to questions about themselves (languages, "
+    "goals, 'not sure', names) are not attempts.\n\n"
     "Notes: only for incorrect attempts the tutor's reply did NOT already "
     "correct — one short sentence in {language} quoting the correct Dutch. "
     'Otherwise "".\n\n'

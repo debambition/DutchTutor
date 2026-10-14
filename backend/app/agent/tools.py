@@ -7,8 +7,11 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
+from pydantic import ValidationError
+
 from app.agent.review import schedule
-from app.schemas import LearningLog, PracticeAttempt, PracticeItem, RecurringError, SessionRecord
+from app.speech.language_segments import looks_non_dutch
+from app.schemas import LearningLog, Profile, PracticeAttempt, PracticeItem, RecurringError, SessionRecord
 
 VALID_SKILLS = ["listening", "speaking", "reading", "writing", "grammar_vocab"]
 VALID_LEVELS = ["A1", "A2", "B1", "B2", "C1", "C2"]
@@ -146,6 +149,10 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
 ]
 
 
+def _practice_words(log: LearningLog) -> set[str]:
+    return {w.strip(".,!?;:\"'").lower() for i in log.practice_items for w in i.text.split()} - {""}
+
+
 def practice_key(text: str) -> str:
     """Match "Hoe gaat het?" and "hoe gaat het" as the same item."""
     return " ".join(text.casefold().strip(" .,!?;:\"'“”„").split())
@@ -175,10 +182,18 @@ def dispatch_tool(
     if name == "update_profile_field":
         field_name = arguments.get("field")
         value = arguments.get("value")
-        if not hasattr(log.profile, field_name):
+        if field_name not in Profile.model_fields:
             return f"error: unknown profile field {field_name!r}"
-        setattr(log.profile, field_name, value)
-        return f"ok: profile.{field_name} -> {value!r}"
+        # List fields accept "Hindi, English" as well as ["Hindi", "English"].
+        if isinstance(value, str) and isinstance(getattr(log.profile, field_name), list):
+            value = [v.strip() for v in value.split(",") if v.strip()]
+        try:
+            # Validate before storing: a wrongly typed value would make the
+            # learner's saved log unloadable.
+            log.profile = Profile.model_validate({**log.profile.model_dump(), field_name: value})
+        except ValidationError as exc:
+            return f"error: invalid value for {field_name}: {exc.errors()[0]['msg']}"
+        return f"ok: profile.{field_name} -> {getattr(log.profile, field_name)!r}"
 
     if name == "log_vocabulary":
         word = arguments.get("word", "").strip()
@@ -196,6 +211,16 @@ def dispatch_tool(
         outcome = arguments.get("outcome")
         if not text or outcome not in ("introduced", "correct", "incorrect"):
             return f"error: invalid practice record {arguments!r}"
+        # Only Dutch is evaluated. Already-tracked items always pass; new text
+        # is refused when it is evidently English or another language.
+        key = practice_key(text)
+        tracked = any(practice_key(i.text) == key for i in log.practice_items)
+        if not tracked and looks_non_dutch(text, _practice_words(log)):
+            return (
+                f"error: {text!r} is not Dutch — only Dutch the learner attempts or is "
+                "taught is tracked. Never record or grade English or the learner's "
+                "native language (e.g. intake answers)."
+            )
         today_date = date.today()
         today = today_date.isoformat()
         key = practice_key(text)
