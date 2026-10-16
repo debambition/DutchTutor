@@ -1,0 +1,12 @@
+{{- if and .Values.ingress.enabled .Values.ingress.tls.enabled .Values.ingress.tls.certManager.selfSigned }}
+# Self-signed certificates for clusters without a usable public CA. Browsers
+# warn until each user accepts the certificate.
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: {{ include "dutchtutor.fullname" . }}-selfsigned
+  labels:
+    {{- include "dutchtutor.labels" . | nindent 4 }}
+spec:
+  selfSigned: {}
+{{- end }}

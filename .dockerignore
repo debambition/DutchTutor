@@ -1,0 +1,14 @@
+# Keep secrets, local environments and learner data out of the image.
+**/.env
+backend/.venv
+backend/data
+**/__pycache__
+**/*.pyc
+backend/tests
+backend/pytest.ini
+.git
+.github
+.claude
+charts
+*.md
+!dutch-tutor-agent-spec.md

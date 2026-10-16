@@ -2,29 +2,109 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Dutch Tutor</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <main class="app">
+  <div class="app">
     <header>
       <h1>🇳🇱 Dutch Tutor</h1>
       <div class="controls">
-        <input id="userId" placeholder="user id (e.g. your name)" value="demo-user" />
+        <span id="whoami" class="whoami"></span>
+        <button id="signOutBtn" class="secondary">Sign out</button>
+        <label class="lang">
+          <span>Explanations in</span>
+          <select id="feedbackLang" aria-label="Explanation language">
+            <option>English</option>
+            <option>Arabic</option>
+            <option>Chinese</option>
+            <option>French</option>
+            <option>German</option>
+            <option>Hindi</option>
+            <option>Italian</option>
+            <option>Polish</option>
+            <option>Portuguese</option>
+            <option>Russian</option>
+            <option>Spanish</option>
+            <option>Turkish</option>
+            <option>Ukrainian</option>
+          </select>
+        </label>
         <button id="startBtn">Start session</button>
-        <button id="endBtn">End session</button>
+        <button id="endBtn" class="secondary">End session</button>
+        <button id="progressToggle" class="secondary progress-toggle" aria-controls="progressPanel" aria-expanded="false">📊 Progress</button>
       </div>
     </header>
 
-    <section id="chatLog" class="chat-log" aria-live="polite"></section>
+    <main class="chat">
+      <section id="chatLog" class="chat-log" aria-live="polite"></section>
+      <footer>
+        <button id="micBtn" title="Hold to record" aria-label="Hold to record">🎙️</button>
+        <input id="textInput" aria-label="Message" placeholder="Type in Dutch or your language..." />
+        <button id="sendBtn">Send</button>
+        <audio id="player" hidden></audio>
+      </footer>
+    </main>
 
-    <footer>
-      <button id="micBtn" title="Hold to record">🎙️</button>
-      <input id="textInput" placeholder="Type in Dutch or your language..." />
-      <button id="sendBtn">Send</button>
-      <audio id="player" hidden></audio>
-    </footer>
-  </main>
+    <aside id="progressPanel" class="progress" aria-label="Your progress">
+      <div class="progress-head">
+        <h2>Your progress</h2>
+        <button id="progressClose" class="icon progress-toggle" aria-label="Close progress">✕</button>
+      </div>
+
+      <div class="stats">
+        <div class="stat"><span id="statCovered" class="stat-value">0</span><span class="stat-label">covered</span></div>
+        <div class="stat"><span id="statAvg" class="stat-value">–</span><span class="stat-label">avg score</span></div>
+        <div class="stat"><span id="statStrong" class="stat-value">0</span><span class="stat-label">strong</span></div>
+        <div class="stat"><span id="statWeak" class="stat-value">0</span><span class="stat-label">need practice</span></div>
+      </div>
+
+      <h3>Skill levels</h3>
+      <div id="levels" class="levels"></div>
+      <p class="hint">Bars show progress toward the next level: words &amp; sentences you've got right
+        at least 80% of the time (over 2+ tries) at your current level. Your tutor confirms level-ups.</p>
+
+      <h3>Level history</h3>
+      <div id="history" class="history"></div>
+      <details class="table-view">
+        <summary>Table view</summary>
+        <table id="historyTable"></table>
+      </details>
+
+      <h3>Practice</h3>
+      <div class="drill-buttons">
+        <button id="listenDrillBtn" class="secondary">🎧 Listening drill</button>
+        <button id="readDrillBtn" class="secondary">📖 Reading drill</button>
+      </div>
+      <p id="dueNote" class="hint"></p>
+
+      <div class="items-head">
+        <h3>Words &amp; sentences</h3>
+        <div class="filter" role="group" aria-label="Show">
+          <button data-filter="session" class="active">This session</button>
+          <button data-filter="all">All</button>
+        </div>
+      </div>
+      <ul id="items" class="items"></ul>
+    </aside>
+  </div>
+
+  <div id="signIn" class="sign-in" role="dialog" aria-modal="true" aria-labelledby="signInTitle">
+    <form id="signInForm" class="sign-in-card">
+      <h2 id="signInTitle">🇳🇱 Sign in to Dutch Tutor</h2>
+      <label>User id
+        <input id="signInUser" autocomplete="username" required maxlength="40"
+               pattern="[A-Za-z0-9_.\-]{1,40}" title="Letters, digits, dots, dashes or underscores" />
+      </label>
+      <label>Passphrase
+        <input id="signInPass" type="password" autocomplete="current-password" required minlength="6" />
+      </label>
+      <p class="hint">First time with this user id? Signing in sets its passphrase.</p>
+      <p id="signInError" class="sign-in-error" role="alert"></p>
+      <button type="submit">Sign in</button>
+    </form>
+  </div>
 
   <script src="app.js"></script>
 </body>

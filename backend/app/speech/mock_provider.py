@@ -8,5 +8,5 @@ class MockSpeechProvider(SpeechProvider):
     def transcribe(self, audio_bytes: bytes, content_type: str) -> str:
         return f"[mock transcription of {len(audio_bytes)} bytes of audio]"
 
-    def synthesize(self, text: str, rate: str = "0%") -> bytes:
+    def synthesize(self, text: str, rate: str = "0%", explanation_voice: str | None = None) -> bytes:
         return b""  # no audio in mock mode

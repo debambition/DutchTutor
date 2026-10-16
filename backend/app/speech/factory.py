@@ -16,6 +16,8 @@ def get_speech_provider() -> SpeechProvider:
             region=settings.azure_speech_region,
             recognition_locale=settings.azure_speech_recognition_locale,
             voice=settings.azure_speech_voice,
+            endpoint=settings.azure_speech_endpoint,
+            explanation_voice=settings.azure_speech_explanation_voice,
         )
     if provider == "mock":
         return MockSpeechProvider()

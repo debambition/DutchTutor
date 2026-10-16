@@ -7,10 +7,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
+import truststore
 
-from app.api.routes import router as api_router
+# Verify TLS against the OS certificate store instead of certifi's bundle, so
+# outbound calls work behind TLS-inspecting corporate proxies (e.g. Zscaler)
+# whose root CA is trusted by the OS but not shipped with Python.
+truststore.inject_into_ssl()
+
+from fastapi import FastAPI  # noqa: E402
+from fastapi.staticfiles import StaticFiles  # noqa: E402
+
+from app.api.routes import router as api_router  # noqa: E402
 
 FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend"
 

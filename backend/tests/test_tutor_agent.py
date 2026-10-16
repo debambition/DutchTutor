@@ -41,7 +41,8 @@ def test_tutor_agent_handle_message_executes_tool_then_replies(tmp_path):
         raw_message={"role": "assistant", "tool_calls": []},
     )
     final_response = LLMResponse(text="Goed zo! Je spreekt al A2.", tool_calls=[], raw_message={})
-    llm = ScriptedLLMProvider([tool_call_response, final_response])
+    audit_response = LLMResponse(text='{"graded": [], "missed": []}', tool_calls=[], raw_message={})
+    llm = ScriptedLLMProvider([tool_call_response, final_response, audit_response])
 
     agent = TutorAgent(llm=llm, store=store)
     reply = agent.handle_message("erin", "Ik woon in Amsterdam.")

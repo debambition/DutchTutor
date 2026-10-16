@@ -1,0 +1,19 @@
+{{- /* Fail early instead of deploying a tutor that errors on its first lesson. */}}
+{{- if eq .Values.config.LLM_PROVIDER "azure_openai" }}
+{{- $_ := required "config.AZURE_OPENAI_ENDPOINT is required when LLM_PROVIDER=azure_openai" .Values.config.AZURE_OPENAI_ENDPOINT }}
+{{- $_ := required "config.AZURE_OPENAI_DEPLOYMENT is required when LLM_PROVIDER=azure_openai" .Values.config.AZURE_OPENAI_DEPLOYMENT }}
+{{- end }}
+{{- if eq .Values.config.SPEECH_PROVIDER "azure" }}
+{{- $_ := required "config.AZURE_SPEECH_REGION is required when SPEECH_PROVIDER=azure" .Values.config.AZURE_SPEECH_REGION }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "dutchtutor.fullname" . }}
+  labels:
+    {{- include "dutchtutor.labels" . | nindent 4 }}
+data:
+  {{- range $key, $value := .Values.config }}
+  {{ $key }}: {{ $value | toString | quote }}
+  {{- end }}
+  DATA_DIR: /app/backend/data/users
